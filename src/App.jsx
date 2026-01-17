@@ -1487,8 +1487,18 @@ const TelemetryView = ({
         x: (p.lon - minLon) / lonRange - 0.5,
         z: -((p.lat - minLat) / latRange - 0.5),
         y: (p.ele - minEle) / eleRange,
+        speed: p.smoothSpeed || p.speed || 0,
       })),
-      bounds: { minLat, minLon, minEle, latRange, lonRange, eleRange },
+      bounds: {
+        minLat,
+        minLon,
+        minEle,
+        latRange,
+        lonRange,
+        eleRange,
+        maxSpeed: viewData.summary.maxSpeed || 100,
+      },
+      summary: viewData.summary,
     };
   }, [viewData]); // Assuming viewData structure is stable, points array is new reference
 
@@ -1541,7 +1551,7 @@ const TelemetryView = ({
             ? Math.ceil(parseFloat(viewData.summary.maxSpeed) / 10) * 10
             : 100;
           drawCanvasSpeedometer(ctx, spd, max, bgOpacity);
-        } else if (w.type === "map") {
+        } else if (w.type === "map" || w.type === "map-speed") {
           if (normalizedPointsRef.current?.points) {
             drawCanvasMap(
               ctx,
@@ -1551,8 +1561,19 @@ const TelemetryView = ({
               currentPoint,
               normalizedPointsRef.current.bounds,
               bgOpacity,
+              w.type === "map-speed", // colorize
+              normalizedPointsRef.current.summary, // summary
             );
           }
+        } else if (w.type === "elevation") {
+          drawCanvasElevation(ctx, currentPoint?.ele || 0, bgOpacity);
+        } else if (w.type === "elevation-profile") {
+          drawCanvasElevationProfile(
+            ctx,
+            viewData.points,
+            currentPoint,
+            bgOpacity,
+          );
         }
 
         ctx.restore();
@@ -1572,6 +1593,140 @@ const TelemetryView = ({
   ]);
 
   // --- DRAWING HELPERS ---
+  const drawCanvasElevation = (ctx, ele, opacity = 0.3) => {
+    const w = 200;
+    const h = 120;
+
+    // Background
+    if (opacity > 0) {
+      if (ctx.roundRect) ctx.roundRect(0, 0, w, h, 20);
+      else ctx.rect(0, 0, w, h);
+      ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+      ctx.fill();
+    }
+
+    // Icon Area
+    ctx.fillStyle = "rgba(251, 113, 133, 0.1)"; // rose-500/10
+    ctx.beginPath();
+    ctx.arc(40, 40, 20, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Text
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    // Value
+    ctx.font = "900 48px sans-serif";
+    ctx.fillStyle = "#fdba74"; // orange-300
+    ctx.shadowColor = "rgba(253, 186, 116, 0.5)";
+    ctx.shadowBlur = 10;
+    ctx.textAlign = "right";
+    ctx.fillText(Math.round(ele), w - 20, 50);
+    ctx.shadowBlur = 0;
+
+    // Label
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillStyle = "#a1a1aa"; // zinc-400
+    ctx.fillText("m n.p.m.", w - 20, 85);
+
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#fb7185"; // rose-400
+    ctx.font = "bold 14px sans-serif";
+    ctx.fillText("ALT", 25, 85);
+  };
+
+  const drawCanvasElevationProfile = (ctx, points, cursor, opacity = 0.3) => {
+    const w = 600;
+    const h = 200;
+    const pad = 20;
+    const plotW = w - pad * 2;
+    const plotH = h - pad * 2;
+
+    // Background
+    if (opacity > 0) {
+      if (ctx.roundRect) ctx.roundRect(0, 0, w, h, 20);
+      else ctx.rect(0, 0, w, h);
+      ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+      ctx.fill();
+    }
+
+    // Min/Max Ele for scaling
+    // Optimization: Should be calculated once in normalizedPointsRef or similar
+    // Doing it here is okay for 60fps if points < 5000 approx
+    const eles = points.map((p) => p.ele);
+    const minEle = Math.min(...eles);
+    const maxEle = Math.max(...eles);
+    const rangeEle = maxEle - minEle || 1;
+
+    // Normalize Distances
+    const startDist = points[0].cumDist;
+    const endDist = points[points.length - 1].cumDist;
+    const totalDist = endDist - startDist || 1;
+
+    ctx.translate(pad, pad); // Move to plot area
+
+    // Draw Fill
+    ctx.beginPath();
+    ctx.moveTo(0, plotH);
+
+    points.forEach((p) => {
+      const x = ((p.cumDist - startDist) / totalDist) * plotW;
+      const y = plotH - ((p.ele - minEle) / rangeEle) * plotH;
+      ctx.lineTo(x, y);
+    });
+
+    ctx.lineTo(plotW, plotH);
+    ctx.closePath();
+
+    const grad = ctx.createLinearGradient(0, 0, 0, plotH);
+    grad.addColorStop(0, "rgba(251, 113, 133, 0.5)"); // rose
+    grad.addColorStop(1, "rgba(251, 113, 133, 0.0)");
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Draw Line
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const x = ((p.cumDist - startDist) / totalDist) * plotW;
+      const y = plotH - ((p.ele - minEle) / rangeEle) * plotH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#fb7185";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw Cursor
+    if (cursor) {
+      const cx = ((cursor.cumDist - startDist) / totalDist) * plotW;
+      const cy = plotH - ((cursor.ele - minEle) / rangeEle) * plotH;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, plotH);
+      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "#fff";
+      ctx.fill();
+    }
+
+    // Labels
+    ctx.font = "10px sans-serif";
+    ctx.fillStyle = "#71717a"; // zinc-500
+    ctx.textAlign = "left";
+    ctx.fillText(`${Math.round(minEle)}m`, 0, plotH - 5);
+    ctx.textAlign = "right";
+    ctx.fillText(`${Math.round(maxEle)}m`, plotW, 10);
+  };
+
   const drawCanvasSpeedometer = (ctx, speed, max, opacity = 0.3) => {
     const size = 300; // Original SVG size logic
     const cx = 150; // Half of 300? No, Speedometer component uses 200x200 viewBox but size=300 div.
@@ -1694,6 +1849,8 @@ const TelemetryView = ({
     cursor,
     bounds,
     opacity = 0.3,
+    colorize = false,
+    summary = {},
   ) => {
     // Center context first
     ctx.save();
@@ -1743,7 +1900,7 @@ const TelemetryView = ({
         y = pt.sy;
       }
 
-      rawPoints.push({ x, y });
+      rawPoints.push({ x, y, speed: p.speed });
       if (x < rMinX) rMinX = x;
       if (x > rMaxX) rMaxX = x;
       if (y < rMinY) rMinY = y;
@@ -1798,6 +1955,7 @@ const TelemetryView = ({
     const screenPoints = rawPoints.map((p) => ({
       x: (p.x - cenX) * scale,
       y: (p.y - cenY) * scale,
+      speed: p.speed,
     }));
 
     // Recalculate bounds for Background Drawing (exact covered area)
@@ -1885,26 +2043,63 @@ const TelemetryView = ({
       ctx.shadowBlur = 0;
     }
 
-    // 4. Draw Path using pre-calculated screenPoints
-    ctx.beginPath();
-    screenPoints.forEach((p, i) => {
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    });
+    // 4. Draw Path
+    if (colorize) {
+      const maxSpeed = summary.maxSpeed || 100;
 
-    // Create gradient for path to match SVG
-    const grad = ctx.createLinearGradient(-200, -200, 200, 200);
-    grad.addColorStop(0, "#fdba74");
-    grad.addColorStop(1, "#fb7185");
+      // Draw per-segment for coloring
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.shadowBlur = 4;
+      ctx.shadowColor = "#000"; // Generic shadow
+      ctx.lineWidth = mode3D ? 3 : 2;
 
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = mode3D ? 3 : 2;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.shadowBlur = 4;
-    ctx.shadowColor = "#fb7185";
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+      for (let i = 0; i < screenPoints.length - 1; i++) {
+        const p1 = screenPoints[i];
+        const p2 = screenPoints[i + 1];
+
+        // Calc color
+        const speed = p1.speed || 0;
+        const ratio = Math.min(1, Math.max(0, speed / maxSpeed));
+        
+        // Simple Heatmap: Blue (0) -> Green -> Yellow -> Red (1)
+        // or more aesthetic: Indigo -> Purple -> Orange -> Rose
+        // Let's use HSL for smooth transition
+        // High speed (1.0) = Red (0)
+        // Low speed (0.0) = Green (120)
+        // Avoid Blue (240) for chroma safety
+        const hue = 120 - ratio * 120;
+        const color = `hsl(${hue}, 80%, 50%)`;
+
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = color;
+        ctx.shadowColor = color; // Colored Glow
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+    } else {
+      ctx.beginPath();
+      screenPoints.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+
+      // Create gradient for path to match SVG
+      const grad = ctx.createLinearGradient(-200, -200, 200, 200);
+      grad.addColorStop(0, "#fdba74");
+      grad.addColorStop(1, "#fb7185");
+
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = mode3D ? 3 : 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.shadowBlur = 4;
+      ctx.shadowColor = "#fb7185";
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
 
     // Draw Cursor
     if (cursor && bounds) {
@@ -2027,6 +2222,18 @@ const TelemetryView = ({
           scale: 1.0,
           rotation: { alpha: 0, beta: 45 },
         },
+        "map-speed": {
+          x: resolution.w - 650,
+          y: 50,
+          scale: 1.0,
+          rotation: { alpha: 0, beta: 45 },
+        },
+        elevation: { x: 50, y: 50, scale: 1.0 },
+        "elevation-profile": {
+          x: resolution.w / 2 - 300,
+          y: resolution.h - 250,
+          scale: 1.0,
+        },
       };
       return [...prev, { id, type, ...defaults[type] }];
     });
@@ -2041,53 +2248,88 @@ const TelemetryView = ({
     const speedoInternalPad = 15; // approximate empty space in 300px speedometer box
 
     setWidgets((prev) => {
-      const typesToReset = ["speedometer", "map"];
+      const typesToReset = [
+        "speedometer",
+        "map",
+        "elevation",
+        "elevation-profile",
+      ];
       let newWidgets = prev.filter((w) => !typesToReset.includes(w.type));
 
       // Re-add/Update Speedometer
       // Layout: Bottom-Left
-      const speedScale = targetH / 300; // Base size 300
+      if (prev.find((w) => w.type === "speedometer")) {
+        const speedScale = targetH / 300;
+        const speedX =
+          layoutMargin - (tilePad + speedoInternalPad) * speedScale;
+        const speedY =
+          resolution.h -
+          layoutMargin -
+          (tilePad + 300 - speedoInternalPad) * speedScale;
 
-      // Calculate Visual Offsets
-      // We want visual circle edge to touch layoutMargin
-      const speedX = layoutMargin - (tilePad + speedoInternalPad) * speedScale;
-      // Bottom edge: Box is 300, minus ~15px internal pad
-      const speedY =
-        resolution.h -
-        layoutMargin -
-        (tilePad + 300 - speedoInternalPad) * speedScale;
-
-      newWidgets.push({
-        id: prev.find((w) => w.type === "speedometer")?.id || "speed1",
-        type: "speedometer",
-        scale: speedScale,
-        x: speedX,
-        y: speedY,
-      });
+        newWidgets.push({
+          id: prev.find((w) => w.type === "speedometer")?.id || "speed1",
+          type: "speedometer",
+          scale: speedScale,
+          x: speedX,
+          y: speedY,
+        });
+      }
 
       // Re-add/Update Map
       // Layout: Top-Right
-      const mapScale = targetH / 400; // Base size H=400
+      if (prev.find((w) => w.type === "map")) {
+        const mapScale = targetH / 400;
+        const mapX = resolution.w - layoutMargin - (tilePad + 600) * mapScale;
+        const mapY = layoutMargin - tilePad * mapScale;
 
-      // Map has 0 internal padding (visual content is the full box)
-      const mapX = resolution.w - layoutMargin - (tilePad + 600) * mapScale;
-      // Map vertical correction: The actual bounding box of content inside canvas
-      // is centered in 600x400, but we want the *edge* of that content to touch margin.
-      // However, the auto-centering logic we added to drawCanvasMap makes the visual content fill the frame.
-      // The issue is likely tilePad.
-      const mapY = layoutMargin - tilePad * mapScale;
+        newWidgets.push({
+          id: prev.find((w) => w.type === "map")?.id || "map1",
+          type: "map",
+          scale: mapScale,
+          rotation: prev.find((w) => w.type === "map")?.rotation || {
+            alpha: 0,
+            beta: 45,
+          },
+          x: mapX,
+          y: mapY,
+        });
+      }
 
-      newWidgets.push({
-        id: prev.find((w) => w.type === "map")?.id || "map1",
-        type: "map",
-        scale: mapScale,
-        rotation: prev.find((w) => w.type === "map")?.rotation || {
-          alpha: 0,
-          beta: 45,
-        },
-        x: mapX,
-        y: mapY,
-      });
+      // Re-add/Update Elevation
+      // Layout: Top-Left
+      if (prev.find((w) => w.type === "elevation")) {
+        const eleScale = targetH / 300; // Match speedo scale feel
+        const eleX = layoutMargin - tilePad * eleScale;
+        const eleY = layoutMargin - tilePad * eleScale;
+
+        newWidgets.push({
+          id: prev.find((w) => w.type === "elevation")?.id || "ele1",
+          type: "elevation",
+          scale: eleScale,
+          x: eleX,
+          y: eleY,
+        });
+      }
+
+      // Re-add/Update Profile
+      // Layout: Bottom-Center
+      if (prev.find((w) => w.type === "elevation-profile")) {
+        const profScale = targetH / 400;
+        const profW = 600;
+        const profH = 200;
+        const profX = (resolution.w - profW * profScale) / 2;
+        const profY =
+          resolution.h - layoutMargin - (tilePad + profH) * profScale;
+
+        newWidgets.push({
+          id: prev.find((w) => w.type === "elevation-profile")?.id || "prof1",
+          type: "elevation-profile",
+          scale: profScale,
+          x: profX,
+          y: profY,
+        });
+      }
 
       return newWidgets;
     });
@@ -2149,6 +2391,27 @@ const TelemetryView = ({
               title="Mapa"
             >
               <MapIcon size={16} />
+            </button>
+            <button
+              onClick={() => toggleWidget("map-speed")}
+              className={`p-1 hover:text-rose-300 ${widgets.find((w) => w.type === "map-speed") ? "text-rose-500" : "text-zinc-400"}`}
+              title="Mapa Termiczna (Prędkość)"
+            >
+              <TrendingUp size={16} />
+            </button>
+            <button
+              onClick={() => toggleWidget("elevation")}
+              className={`p-1 hover:text-rose-300 ${widgets.find((w) => w.type === "elevation") ? "text-rose-500" : "text-zinc-400"}`}
+              title="Aktualna Wysokość"
+            >
+              <ArrowUp size={16} />
+            </button>
+            <button
+              onClick={() => toggleWidget("elevation-profile")}
+              className={`p-1 hover:text-rose-300 ${widgets.find((w) => w.type === "elevation-profile") ? "text-rose-500" : "text-zinc-400"}`}
+              title="Profil Wysokościowy"
+            >
+              <Mountain size={16} />
             </button>
             <div className="flex items-center gap-1 mx-1 border border-zinc-700 rounded px-1">
               <button
@@ -2358,6 +2621,45 @@ const TelemetryView = ({
                     </div>
                   )}
                 </div>
+              )}
+              {w.type === "map-speed" && (
+                <div className="w-[600px] h-[400px] rounded-xl relative overflow-hidden group">
+                  <RoutePreview
+                    points={viewData.points}
+                    mode3D={settings.visualMode3D}
+                    detailLevel={settings.detailLevel}
+                    hoverIndex={hoverIndex}
+                    cursorPoint={currentPoint}
+                    rotation={w.rotation}
+                    onRotationChange={(r) =>
+                      handleUpdateWidget(w.id, { rotation: r })
+                    }
+                    className="w-full h-full border-none [&>svg]:opacity-0"
+                    transparent={true}
+                    showControls={false}
+                  />
+                  {controlsVisible && (
+                    <div className="absolute bottom-2 right-2 flex gap-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() =>
+                          setSettings((s) => ({
+                            ...s,
+                            visualMode3D: !s.visualMode3D,
+                          }))
+                        }
+                        className="px-2 py-1 bg-black/50 text-white text-[10px] rounded"
+                      >
+                        {settings.visualMode3D ? "2D" : "3D"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {w.type === "elevation" && (
+                <div className="w-[200px] h-[120px] opacity-0" />
+              )}
+              {w.type === "elevation-profile" && (
+                <div className="w-[600px] h-[200px] opacity-0" />
               )}
             </DraggableTile>
           ))}
@@ -2644,6 +2946,7 @@ const SkiTrackerApp = () => {
               lon: lerp(p1.lon, p2.lon),
               ele: lerp(p1.ele, p2.ele),
               dist: lerp(p1.dist, p2.dist),
+              cumDist: lerp(p1.cumDist, p2.cumDist),
               speed: lerp(p1.speed, p2.speed),
               smoothSpeed: lerp(
                 p1.smoothSpeed || p1.speed,
