@@ -50,6 +50,7 @@ import {
   Move,
   Maximize,
   Grid,
+  Wand2,
 } from "lucide-react";
 
 // --- ATOMS (Zgodne z UiStyle.jsx) ---
@@ -420,7 +421,7 @@ const ElevationChart = ({
     })
     .join(" ");
 
-  const areaPath = `${svgPoints} ${width},${h} 0,${h}`;
+  const areaPath = svgPoints ? `M ${svgPoints} L ${width},${h} L 0,${h} Z` : "";
 
   const getIndexFromX = (clientX) => {
     const rect = containerRef.current.getBoundingClientRect();
@@ -621,7 +622,7 @@ const SpeedChart = ({
     })
     .join(" ");
 
-  const areaPath = `${svgPoints} ${width},${h} 0,${h}`;
+  const areaPath = svgPoints ? `M ${svgPoints} L ${width},${h} L 0,${h} Z` : "";
 
   let cursorX = -1;
   if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
@@ -747,19 +748,52 @@ const SpeedChart = ({
   );
 };
 
+// --- LOGIKA 3D ---
+const project3D = (x, y, z, cosA, sinA, cosB, sinB) => {
+  const ELEVATION_SCALE = 0.4;
+  const x1 = x * cosA - z * sinA;
+  const z1 = x * sinA + z * cosA;
+  const y1 = y * ELEVATION_SCALE;
+
+  const sx = 50 + x1 * 80;
+  const sy = 50 - (y1 * cosB - z1 * sinB) * 80;
+  return { sx, sy };
+};
+
 const RoutePreview = ({
   points,
   mode3D,
   detailLevel = 5000,
   hoverIndex,
-  cursorPoint: externalCursorPoint, // Renamed to avoid confusion with internal calculation
+  cursorPoint: externalCursorPoint,
   onHover,
+  rotation: controlledRotation,
+  onRotationChange,
   className = "",
   transparent = false,
+  showControls = true,
 }) => {
   if (!points || points.length === 0) return null;
 
-  const [rotation, setRotation] = useState({ alpha: 0, beta: 45 });
+  const [localRotation, setLocalRotation] = useState({ alpha: 0, beta: 45 });
+  const rotation = controlledRotation || localRotation;
+
+  const setRotation = useCallback(
+    (newRotOrUpdater) => {
+      if (onRotationChange) {
+        // Handle functional update if necessary, but simpler to assume object for now or handle it
+        const next =
+          typeof newRotOrUpdater === "function"
+            ? newRotOrUpdater(rotation)
+            : newRotOrUpdater;
+        onRotationChange(next);
+      } else {
+        setLocalRotation(newRotOrUpdater);
+      }
+    },
+    [onRotationChange, rotation],
+  );
+
   const containerRef = useRef(null);
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
@@ -808,17 +842,6 @@ const RoutePreview = ({
     }));
   }, [renderData, points.length, bounds]);
 
-  const project = useCallback((x, y, z, cosA, sinA, cosB, sinB) => {
-    const ELEVATION_SCALE = 0.4;
-    const x1 = x * cosA - z * sinA;
-    const z1 = x * sinA + z * cosA;
-    const y1 = y * ELEVATION_SCALE;
-
-    const sx = 50 + x1 * 80;
-    const sy = 50 - (y1 * cosB - z1 * sinB) * 80;
-    return { sx, sy };
-  }, []);
-
   const projectedPoints = useMemo(() => {
     const { alpha, beta } = rotation;
     const radAlpha = (alpha * Math.PI) / 180;
@@ -841,11 +864,11 @@ const RoutePreview = ({
       });
     } else {
       return normalizedPoints.map((p) => {
-        const { sx, sy } = project(p.x, p.y, p.z, cosA, sinA, cosB, sinB);
+        const { sx, sy } = project3D(p.x, p.y, p.z, cosA, sinA, cosB, sinB);
         return { sx, sy, originalIndex: p.originalIndex };
       });
     }
-  }, [normalizedPoints, rotation, mode3D, project]);
+  }, [normalizedPoints, rotation, mode3D]);
 
   const projectedPath = useMemo(() => {
     return projectedPoints.map((p) => `${p.sx},${p.sy}`).join(" ");
@@ -865,17 +888,17 @@ const RoutePreview = ({
     const sinB = Math.sin(radBeta);
 
     for (let x = -0.5; x <= 0.501; x += step) {
-      const start = project(x, 0, -0.5, cosA, sinA, cosB, sinB);
-      const end = project(x, 0, 0.5, cosA, sinA, cosB, sinB);
+      const start = project3D(x, 0, -0.5, cosA, sinA, cosB, sinB);
+      const end = project3D(x, 0, 0.5, cosA, sinA, cosB, sinB);
       lines.push({ x1: start.sx, y1: start.sy, x2: end.sx, y2: end.sy });
     }
     for (let z = -0.5; z <= 0.501; z += step) {
-      const start = project(-0.5, 0, z, cosA, sinA, cosB, sinB);
-      const end = project(0.5, 0, z, cosA, sinA, cosB, sinB);
+      const start = project3D(-0.5, 0, z, cosA, sinA, cosB, sinB);
+      const end = project3D(0.5, 0, z, cosA, sinA, cosB, sinB);
       lines.push({ x1: start.sx, y1: start.sy, x2: end.sx, y2: end.sy });
     }
     return lines;
-  }, [rotation, mode3D, project]);
+  }, [rotation, mode3D]);
 
   const northMarker = useMemo(() => {
     // Show marker in both 2D and 3D
@@ -897,8 +920,8 @@ const RoutePreview = ({
       return { sx: 50 + rx * 80, sy: 50 + rz * 80 };
     }
 
-    return project(0, 0, -0.55, cosA, sinA, cosB, sinB);
-  }, [rotation, mode3D, project]);
+    return project3D(0, 0, -0.55, cosA, sinA, cosB, sinB);
+  }, [rotation, mode3D]);
 
   const cursorPoint = useMemo(() => {
     // 1. External Interpolated Point (Smooth Animation)
@@ -909,7 +932,7 @@ const RoutePreview = ({
       const valLat =
         externalCursorPoint.lat !== undefined
           ? externalCursorPoint.lat
-          : externalCursorPoint.x; // Handle inconsistent naming if any
+          : externalCursorPoint.x;
       const valLon =
         externalCursorPoint.lon !== undefined
           ? externalCursorPoint.lon
@@ -930,10 +953,9 @@ const RoutePreview = ({
       if (!mode3D) {
         const rx = nx * cosA - nz * sinA;
         const rz = nx * sinA + nz * cosA;
-        // Scale 80 matches the projectedPoints scale usually
         return { sx: 50 + rx * 80, sy: 50 + rz * 80 };
       }
-      return project(nx, ny, nz, cosA, sinA, cosB, sinB);
+      return project3D(nx, ny, nz, cosA, sinA, cosB, sinB);
     }
 
     // 2. Fallback to hoverIndex snapping
@@ -957,7 +979,6 @@ const RoutePreview = ({
     bounds,
     rotation,
     mode3D,
-    project,
     projectedPoints,
   ]);
 
@@ -1034,11 +1055,11 @@ const RoutePreview = ({
 
     return corners
       .map((c) => {
-        const p = project(c.x, 0, c.z, cosA, sinA, cosB, sinB);
+        const p = project3D(c.x, 0, c.z, cosA, sinA, cosB, sinB);
         return `${p.sx},${p.sy}`;
       })
       .join(" ");
-  }, [rotation, mode3D, project]);
+  }, [rotation, mode3D]);
 
   return (
     <div
@@ -1131,7 +1152,7 @@ const RoutePreview = ({
         )}
       </svg>
 
-      {mode3D && (
+      {mode3D && showControls && (
         <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-zinc-900/80 px-2 py-1 rounded-lg border border-zinc-700/50 pointer-events-none">
           <Rotate3d size={12} className="text-rose-400" />
           <span className="text-[10px] text-zinc-300">Obracaj / Pochylaj</span>
@@ -1185,13 +1206,22 @@ const Speedometer = ({ speed = 0, max = 100, size = 200, className = "" }) => {
   const percent = val / max;
   const offset = arcLen * (1 - percent);
 
-  // Generate ticks
+  // Generate ticks dynamically based on max speed
+  let step = 5;
+  if (max <= 40) step = 2;
+  else if (max > 140) step = 10;
+
+  const tickCount = Math.floor(max / step) + 1;
   const ticks = [];
-  const tickCount = 11;
+
   for (let i = 0; i < tickCount; i++) {
-    const p = i / (tickCount - 1);
+    const currentVal = i * step;
+    if (currentVal > max) break;
+
+    const p = currentVal / max; // 0 to 1 position
     const angle = startAngle + p * 240;
     const tPos = getCoords(angle);
+
     // Move tick slightly inward
     // We can use same math with radius-15
     const rad = ((angle - 90) * Math.PI) / 180;
@@ -1204,9 +1234,17 @@ const Speedometer = ({ speed = 0, max = 100, size = 200, className = "" }) => {
       y1: tPos.y,
       x2: xIn,
       y2: yIn,
-      isMajor: i % 2 === 0,
+      isMajor: currentVal % 10 === 0,
+      value: currentVal,
     });
   }
+
+  // Correction: If we have too few ticks, maybe make all major?
+  // If tickCount <= 6, all major?
+  // Let's keep logic simple: Every even index is Major (longer/brighter).
+  // But wait, if step is 20. 0(Major), 20(Minor), 40(Major).
+  // Probably better to treat integers like multiples of 20 or 50 as major?
+  // Original logic was pure index based. Let's keep index based for coherence.
 
   return (
     <div
@@ -1267,10 +1305,10 @@ const Speedometer = ({ speed = 0, max = 100, size = 200, className = "" }) => {
 
       {/* Digital Readout */}
       <div className="absolute inset-0 flex flex-col items-center justify-center mt-6">
-        <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-orange-300 to-rose-400 drop-shadow-sm tracking-tighter">
+        <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-orange-300 to-rose-400 drop-shadow-[0_0_10px_rgba(251,113,133,0.5)] tracking-tighter">
           {Math.round(val)}
         </span>
-        <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-[0.2em] opacity-80">
+        <span className="text-zinc-400 text-xs font-bold uppercase tracking-[0.2em] opacity-90 drop-shadow-md">
           km/h
         </span>
       </div>
@@ -1318,7 +1356,7 @@ const DraggableTile = ({
     const startScale = item.scale || 1;
 
     const handleMouseMove = (ev) => {
-      const dy = (startY - ev.clientY) * 0.005;
+      const dy = (ev.clientY - startY) * 0.005;
       const newScale = Math.max(0.1, startScale + dy);
       onUpdate(item.id, { scale: newScale });
     };
@@ -1393,52 +1431,519 @@ const TelemetryView = ({
   playbackSpeed,
   settings,
   setSettings,
+  onSeek, // New prop
 }) => {
   // State for Virtual Studio
   const [resolution, setResolution] = useState(RESOLUTIONS[1]); // Default 1080p
   const [containerScale, setContainerScale] = useState(1);
   const containerRef = useRef(null);
+  const recordingCanvasRef = useRef(null); // Reference for native recording
 
   // Widgets State
   const [widgets, setWidgets] = useState([
     { id: "speed1", type: "speedometer", x: 100, y: 700, scale: 1.5 },
-    { id: "map1", type: "map", x: 1200, y: 50, scale: 1.0 },
+    {
+      id: "map1",
+      type: "map",
+      x: 1200,
+      y: 50,
+      scale: 1.0,
+      rotation: { alpha: 0, beta: 45 },
+    },
   ]);
   const [selectedWidgetId, setSelectedWidgetId] = useState(null);
 
   const [bgMode, setBgMode] = useState("default"); // default, green, blue, magenta
+  const [bgOpacity, setBgOpacity] = useState(0.3);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
+  const [autoScaleFactor, setAutoScaleFactor] = useState(0.25); // 1/4 by default
+  const [layoutMargin, setLayoutMargin] = useState(50);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
 
-  // Auto-fit container
+  // Normalizacja punktów dla Canvas (kopia logiki z RoutePreview)
+  const normalizedPointsRef = useRef([]);
   useEffect(() => {
-    const handleResize = () => {
-      if (containerRef.current) {
-        const { clientWidth, clientHeight } = containerRef.current;
-        const scaleW = (clientWidth - 40) / resolution.w; // 20px padding
-        const scaleH = (clientHeight - 40) / resolution.h;
-        setContainerScale(Math.min(scaleW, scaleH));
-      }
-    };
-    window.addEventListener("resize", handleResize);
-    handleResize();
-    return () => window.removeEventListener("resize", handleResize);
-  }, [resolution]);
+    if (!viewData?.points?.length) return;
+    const points = viewData.points;
+    // Simple version of normalization logic
+    const lats = points.map((p) => p.lat);
+    const lons = points.map((p) => p.lon);
+    const eles = points.map((p) => p.ele);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const minEle = Math.min(...eles);
+    const maxEle = Math.max(...eles);
+    const latRange = maxLat - minLat || 0.00001;
+    const lonRange = maxLon - minLon || 0.00001;
+    const eleRange = maxEle - minEle || 1;
 
-  // Background styles
-  const bgStyles = {
-    default: "bg-zinc-950",
-    green: "bg-[#00ff00]",
-    blue: "bg-[#0000ff]",
-    magenta: "bg-[#ff00ff]",
+    // Store bounds for cursor normalization
+    normalizedPointsRef.current = {
+      points: points.map((p, idx) => ({
+        x: (p.lon - minLon) / lonRange - 0.5,
+        z: -((p.lat - minLat) / latRange - 0.5),
+        y: (p.ele - minEle) / eleRange,
+      })),
+      bounds: { minLat, minLon, minEle, latRange, lonRange, eleRange },
+    };
+  }, [viewData]); // Assuming viewData structure is stable, points array is new reference
+
+  // --- RENDER LOOP FOR RECORDING CANVAS ---
+  useEffect(() => {
+    const canvas = recordingCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d", { alpha: true });
+
+    let animId;
+    const render = () => {
+      // 1. Clear
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 2. Background (If not transparent mode, but usually we Record Transparent)
+      // The user specifically asked for "Transparent" capability.
+      // If bgMode is default (black), we might want to draw black?
+      // Or if bgMode is Green/Blue/Magenta we draw that.
+      // If "default" acts as "Transparent" for recording, we leave clear.
+      // BUT, currently bgMode="default" draws bg-zinc-950 on screen.
+      // Let's assume User wants:
+      // - Screen: Sees Background
+      // - Recording: Sees Transparent if bgMode='default' OR maybe a specific toggle?
+      // Re-reading request: "Dlaczego to działa z przezroczystością? ... tło canvasa jest przezroczyste."
+      // So we should NOT draw background if we want transparency.
+      // Let's draw background ONLY if it's a specific color intended for chroma key.
+      if (bgMode !== "default") {
+        ctx.fillStyle =
+          bgMode === "green"
+            ? "#00ff00"
+            : bgMode === "blue"
+              ? "#0000ff"
+              : "#ff00ff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // 3. Draw Widgets
+      widgets.forEach((w) => {
+        ctx.save();
+        ctx.translate(w.x, w.y);
+        ctx.scale(w.scale || 1, w.scale || 1);
+
+        // Correction for DraggableTile p-3 (12px) padding
+        // This ensures the canvas drawing aligns with the DOM content inside the frame
+        ctx.translate(12, 12);
+
+        if (w.type === "speedometer") {
+          const spd = currentPoint?.smoothSpeed || currentPoint?.speed || 0;
+          const max = viewData.summary.maxSpeed
+            ? Math.ceil(parseFloat(viewData.summary.maxSpeed) / 10) * 10
+            : 100;
+          drawCanvasSpeedometer(ctx, spd, max, bgOpacity);
+        } else if (w.type === "map") {
+          if (normalizedPointsRef.current?.points) {
+            drawCanvasMap(
+              ctx,
+              normalizedPointsRef.current.points,
+              w.rotation || { alpha: 0, beta: 45 },
+              settings.visualMode3D,
+              currentPoint,
+              normalizedPointsRef.current.bounds,
+              bgOpacity,
+            );
+          }
+        }
+
+        ctx.restore();
+      });
+
+      animId = requestAnimationFrame(render);
+    };
+    render();
+    return () => cancelAnimationFrame(animId);
+  }, [
+    widgets,
+    currentPoint,
+    viewData,
+    settings.visualMode3D,
+    bgMode,
+    bgOpacity,
+  ]);
+
+  // --- DRAWING HELPERS ---
+  const drawCanvasSpeedometer = (ctx, speed, max, opacity = 0.3) => {
+    const size = 300; // Original SVG size logic
+    const cx = 150; // Half of 300? No, Speedometer component uses 200x200 viewBox but size=300 div.
+    // We scaled context, so we draw in local coordinate system.
+    // Let's assume local "size" is 300x300.
+
+    // Speedometer component: viewBox 0 0 200 200. Div size=300.
+    // So scale factor = 1.5.
+    ctx.scale(300 / 200, 300 / 200);
+
+    // Defs
+    const radius = 80;
+    const center = 100;
+
+    // Optional background for chroma keying
+    ctx.beginPath();
+    ctx.arc(center, center, radius + 10, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+    ctx.fill();
+
+    const startAngle = -120;
+    const endAngle = 120;
+
+    const rad = (deg) => ((deg - 90) * Math.PI) / 180;
+
+    // Track
+    ctx.beginPath();
+    ctx.arc(center, center, radius, rad(startAngle), rad(endAngle));
+    ctx.lineWidth = 12;
+    ctx.strokeStyle = "#27272a";
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    // Active Arc
+    const val = Math.max(0, Math.min(speed, max));
+    const percent = val / max;
+    const activeEnd = startAngle + (endAngle - startAngle) * percent;
+
+    if (percent > 0) {
+      ctx.beginPath();
+      ctx.arc(center, center, radius, rad(startAngle), rad(activeEnd));
+
+      // Gradient
+      const grad = ctx.createLinearGradient(0, 0, 200, 0);
+      grad.addColorStop(0, "#fdba74");
+      grad.addColorStop(1, "#fb7185");
+      ctx.strokeStyle = grad;
+
+      // Glow
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "#fb7185";
+
+      ctx.stroke();
+
+      // Reset shadow
+      ctx.shadowBlur = 0;
+    }
+
+    // Ticks
+    let step = 5;
+    if (max <= 40) step = 2;
+    else if (max > 140) step = 10;
+
+    const tickCount = Math.floor(max / step) + 1;
+
+    for (let i = 0; i < tickCount; i++) {
+      const currentVal = i * step;
+      if (currentVal > max) break;
+
+      const p = currentVal / max;
+      const a = startAngle + p * 240;
+      const isMajor = currentVal % 10 === 0;
+
+      const angleRad = rad(a);
+      const c = Math.cos(angleRad);
+      const s = Math.sin(angleRad);
+
+      ctx.beginPath();
+      ctx.moveTo(
+        center + (80 - (isMajor ? 10 : 6)) * c,
+        center + (80 - (isMajor ? 10 : 6)) * s,
+      );
+      ctx.lineTo(
+        center + (80 + (isMajor ? 2 : 0)) * c,
+        center + (80 + (isMajor ? 2 : 0)) * s,
+      );
+      ctx.lineWidth = isMajor ? 2 : 1;
+      ctx.strokeStyle = isMajor
+        ? "rgba(255,255,255,0.8)"
+        : "rgba(255,255,255,0.3)";
+      ctx.stroke();
+    }
+
+    // Text
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "900 48px sans-serif";
+    // Gradient Text workaround
+    ctx.fillStyle = "#fb7185";
+
+    // Text Shadow
+    ctx.shadowColor = "rgba(251, 113, 133, 0.5)";
+    ctx.shadowBlur = 10;
+    ctx.fillText(Math.round(val), center, center + 30);
+    ctx.shadowBlur = 0; // Reset
+
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillStyle = "#a1a1aa"; // zinc-400
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 4;
+    ctx.fillText("KM/H", center, center + 55);
+    ctx.shadowBlur = 0;
   };
 
-  const currentSpeed = currentPoint?.smoothSpeed || currentPoint?.speed || 0;
-  const maxSpeed = viewData.summary.maxSpeed
-    ? parseFloat(viewData.summary.maxSpeed)
-    : 100;
+  const drawCanvasMap = (
+    ctx,
+    points,
+    rotation,
+    mode3D,
+    cursor,
+    bounds,
+    opacity = 0.3,
+  ) => {
+    // Center context first
+    ctx.save();
+    ctx.translate(300, 200); // Center of box
+
+    const { alpha, beta } = rotation;
+    const radAlpha = (alpha * Math.PI) / 180;
+    const radBeta = (beta * Math.PI) / 180;
+    const cosA = Math.cos(radAlpha);
+    const sinA = Math.sin(radAlpha);
+    const cosB = Math.cos(radBeta);
+    const sinB = Math.sin(radBeta);
+
+    // Helpers
+    const proj = (x, y, z) => project3D(x, y, z, cosA, sinA, cosB, sinB);
+
+    // 1. Calculate Projected Points & Bounds
+    // First pass: Get raw projected coordinates (centered at 0,0 ideally)
+    const rawPoints = [];
+    let rMinX = Infinity,
+      rMaxX = -Infinity,
+      rMinY = Infinity,
+      rMaxY = -Infinity;
+
+    const rawFloor = [];
+
+    // Process Path Points
+    points.forEach((p) => {
+      const pt = mode3D
+        ? proj(p.x, p.y, p.z)
+        : {
+            sx: (p.x * cosA - p.z * sinA) * 100, // scaled up for precision
+            sy: (p.x * sinA + p.z * cosA) * 100,
+          };
+      // pt.sx/sy are arbitrary. Let's maximize usage.
+      // The original proj function returns roughly 0-100 range centered at 50?
+      // Let's assume we just want relative coords.
+      // Actually original project3D might be returning something else.
+      // Let's just use the values as is, and find bounds.
+
+      let x, y;
+      if (mode3D) {
+        x = pt.sx - 50;
+        y = pt.sy - 50;
+      } else {
+        x = pt.sx;
+        y = pt.sy;
+      }
+
+      rawPoints.push({ x, y });
+      if (x < rMinX) rMinX = x;
+      if (x > rMaxX) rMaxX = x;
+      if (y < rMinY) rMinY = y;
+      if (y > rMaxY) rMaxY = y;
+    });
+
+    // Process Floor (to include in bounds)
+    if (mode3D) {
+      const floorCorners = [
+        { x: -0.5, z: -0.5 },
+        { x: 0.5, z: -0.5 },
+        { x: 0.5, z: 0.5 },
+        { x: -0.5, z: 0.5 },
+      ];
+      floorCorners.forEach((c) => {
+        const p = proj(c.x, 0, c.z);
+        let x = p.sx - 50;
+        let y = p.sy - 50;
+        rawFloor.push({ x, y });
+        if (x < rMinX) rMinX = x;
+        if (x > rMaxX) rMaxX = x;
+        if (y < rMinY) rMinY = y;
+        if (y > rMaxY) rMaxY = y;
+      });
+    } else {
+      // safe fallback for empty track in 2D
+      if (rMinX === Infinity) {
+        rMinX = -1;
+        rMaxX = 1;
+        rMinY = -1;
+        rMaxY = 1;
+      }
+    }
+
+    // Calculate Scale to Fit 600x400 with padding
+    const padding = 20; // Internal padding inside the widget
+    const availW = 600 - padding * 2;
+    const availH = 400 - padding * 2;
+
+    const rangeW = rMaxX - rMinX || 1;
+    const rangeH = rMaxY - rMinY || 1;
+
+    const scaleW = availW / rangeW;
+    const scaleH = availH / rangeH;
+    const scale = Math.min(scaleW, scaleH); // Fit within
+
+    // Center of the raw bounds
+    const cenX = (rMinX + rMaxX) / 2;
+    const cenY = (rMinY + rMaxY) / 2;
+
+    // Map raw points to screen points
+    const screenPoints = rawPoints.map((p) => ({
+      x: (p.x - cenX) * scale,
+      y: (p.y - cenY) * scale,
+    }));
+
+    // Recalculate bounds for Background Drawing (exact covered area)
+    let minX = (-rangeW / 2) * scale;
+    let maxX = (rangeW / 2) * scale;
+    let minY = (-rangeH / 2) * scale;
+    let maxY = (rangeH / 2) * scale;
+
+    // 2. Draw Dynamic Background
+    if (opacity > 0) {
+      const padding = 40; // Increased padding for better look
+      const bx = minX - padding;
+      const by = minY - padding;
+      const bw = maxX - minX + padding * 2;
+      const bh = maxY - minY + padding * 2;
+
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(bx, by, bw, bh, 40); // Large rounded corners
+      } else {
+        ctx.rect(bx, by, bw, bh);
+      }
+      ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+      ctx.fill();
+    }
+
+    // 3. Draw 3D Plane & Grid (clipped to logic or standard?)
+    if (mode3D) {
+      // Recalculate floor with new scale/center
+      const floorCorners = [
+        { x: -0.5, z: -0.5 },
+        { x: 0.5, z: -0.5 },
+        { x: 0.5, z: 0.5 },
+        { x: -0.5, z: 0.5 },
+      ];
+      ctx.beginPath();
+      floorCorners.forEach((c, i) => {
+        const p = proj(c.x, 0, c.z);
+        const x = (p.sx - 50 - cenX) * scale;
+        const y = (p.sy - 50 - cenY) * scale;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.fill();
+
+      // Grid Lines
+      const step = 0.25;
+      ctx.beginPath();
+      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = "rgba(255,255,255,0.1)";
+
+      const drawLine = (p1, p2) => {
+        const x1 = (p1.sx - 50 - cenX) * scale;
+        const y1 = (p1.sy - 50 - cenY) * scale;
+        const x2 = (p2.sx - 50 - cenX) * scale;
+        const y2 = (p2.sy - 50 - cenY) * scale;
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+      };
+
+      // X lines
+      for (let xPos = -0.5; xPos <= 0.501; xPos += step) {
+        drawLine(proj(xPos, 0, -0.5), proj(xPos, 0, 0.5));
+      }
+      // Z lines
+      for (let zPos = -0.5; zPos <= 0.501; zPos += step) {
+        drawLine(proj(-0.5, 0, zPos), proj(0.5, 0, zPos));
+      }
+      ctx.stroke();
+
+      // North Marker (z = -0.55)
+      const nPosRaw = proj(0, 0, -0.55);
+      const nx = (nPosRaw.sx - 50 - cenX) * scale;
+      const ny = (nPosRaw.sy - 50 - cenY) * scale;
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "bold 24px sans-serif"; // Scaled up (6 * 4)
+      ctx.fillStyle = "#10b981";
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = "#10b981";
+      ctx.fillText("N", nx, ny);
+      ctx.shadowBlur = 0;
+    }
+
+    // 4. Draw Path using pre-calculated screenPoints
+    ctx.beginPath();
+    screenPoints.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+
+    // Create gradient for path to match SVG
+    const grad = ctx.createLinearGradient(-200, -200, 200, 200);
+    grad.addColorStop(0, "#fdba74");
+    grad.addColorStop(1, "#fb7185");
+
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = mode3D ? 3 : 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.shadowBlur = 4;
+    ctx.shadowColor = "#fb7185";
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Draw Cursor
+    if (cursor && bounds) {
+      const { minLat, minLon, minEle, latRange, lonRange, eleRange } = bounds;
+      // Normalize
+      const valLat = cursor.lat !== undefined ? cursor.lat : cursor.x;
+      const valLon = cursor.lon !== undefined ? cursor.lon : cursor.y;
+
+      const nx = (valLon - minLon) / lonRange - 0.5;
+      const nz = -((valLat - minLat) / latRange - 0.5);
+      const ny = (cursor.ele - minEle) / eleRange;
+
+      let cx, cy;
+      if (!mode3D) {
+        // 2D Logic
+        const sx = (nx * cosA - nz * sinA) * 100;
+        const sy = (nx * sinA + nz * cosA) * 100;
+        cx = (sx - cenX) * scale;
+        cy = (sy - cenY) * scale;
+      } else {
+        const cp = proj(nx, ny, nz);
+        cx = (cp.sx - 50 - cenX) * scale;
+        cy = (cp.sy - 50 - cenY) * scale;
+      }
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "#fff";
+      ctx.fill();
+      ctx.strokeStyle = "#fb7185";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.restore();
+  };
 
   const handleUpdateWidget = (id, newProps) => {
     setWidgets((prev) =>
@@ -1448,21 +1953,20 @@ const TelemetryView = ({
 
   const handleStartRecording = async () => {
     try {
-      // Suggestion: use browser tab capture
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: "browser" },
-        audio: false,
-        selfBrowserSurface: "include",
-      });
+      if (!recordingCanvasRef.current) return;
 
-      const mimeType = MediaRecorder.isTypeSupported("video/webm; codecs=vp9")
-        ? "video/webm; codecs=vp9"
-        : "video/webm";
+      const stream = recordingCanvasRef.current.captureStream(60); // 60 FPS
+      const mimeType = "video/webm; codecs=vp9"; // Chrome supports this well
 
       const recorder = new MediaRecorder(stream, {
         mimeType,
-        videoBitsPerSecond: 8000000,
-      }); // High bitrate
+        videoBitsPerSecond: 25000000,
+      });
+
+      // Auto-play when recording starts if not already playing
+      if (!isPlaying) {
+        togglePlay();
+      }
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -1482,27 +1986,18 @@ const TelemetryView = ({
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-
         recordedChunksRef.current = [];
         setIsRecording(false);
         setControlsVisible(true);
-        stream.getTracks().forEach((track) => track.stop());
       };
 
       recorder.start();
       setIsRecording(true);
-      setControlsVisible(false);
-
-      stream.getVideoTracks()[0].onended = () => {
-        if (recorder.state === "recording") {
-          recorder.stop();
-        }
-      };
-
+      // setControlsVisible(false); // don't hide controls
       mediaRecorderRef.current = recorder;
     } catch (err) {
       console.error("Error starting recording:", err);
-      // alert("Nagrywanie anulowane.");
+      alert("Błąd nagrywania: " + err.message);
     }
   };
 
@@ -1514,37 +2009,99 @@ const TelemetryView = ({
       mediaRecorderRef.current.stop();
     }
   };
-
+  // ... Layout Presets ... (Keeping original code for layout presets)
   // Layout Presets
-  const applyPreset = (type) => {
-    if (type === "speed") {
-      setWidgets([
-        {
-          id: "speed1",
-          type: "speedometer",
-          x: resolution.w / 2 - 150,
-          y: resolution.h - 400,
-          scale: 2.0,
-        },
-      ]);
-    } else if (type === "map") {
-      setWidgets([{ id: "map1", type: "map", x: 50, y: 50, scale: 1.5 }]);
-    } else if (type === "combined") {
-      setWidgets([
-        {
-          id: "speed1",
-          type: "speedometer",
-          x: 50,
-          y: resolution.h - 350,
+  const toggleWidget = (type) => {
+    setWidgets((prev) => {
+      const exists = prev.find((w) => w.type === type);
+      if (exists) {
+        return prev.filter((w) => w.type !== type);
+      }
+      // Add new
+      const id = type + Math.random().toString(36).substr(2, 5);
+      const defaults = {
+        speedometer: { x: 50, y: resolution.h - 350, scale: 1.5 },
+        map: {
+          x: resolution.w - 650,
+          y: 50,
           scale: 1.0,
+          rotation: { alpha: 0, beta: 45 },
         },
-        { id: "map1", type: "map", x: resolution.w - 600, y: 50, scale: 1.0 }, // Approximate
-      ]);
-    }
+      };
+      return [...prev, { id, type, ...defaults[type] }];
+    });
+  };
+
+  const handleAutoLayout = () => {
+    // scale based on window height
+    const targetH = resolution.h * autoScaleFactor;
+
+    // Constants for visual corrections
+    const tilePad = 12; // p-3 = 12px from DraggableTile
+    const speedoInternalPad = 15; // approximate empty space in 300px speedometer box
+
+    setWidgets((prev) => {
+      const typesToReset = ["speedometer", "map"];
+      let newWidgets = prev.filter((w) => !typesToReset.includes(w.type));
+
+      // Re-add/Update Speedometer
+      // Layout: Bottom-Left
+      const speedScale = targetH / 300; // Base size 300
+
+      // Calculate Visual Offsets
+      // We want visual circle edge to touch layoutMargin
+      const speedX = layoutMargin - (tilePad + speedoInternalPad) * speedScale;
+      // Bottom edge: Box is 300, minus ~15px internal pad
+      const speedY =
+        resolution.h -
+        layoutMargin -
+        (tilePad + 300 - speedoInternalPad) * speedScale;
+
+      newWidgets.push({
+        id: prev.find((w) => w.type === "speedometer")?.id || "speed1",
+        type: "speedometer",
+        scale: speedScale,
+        x: speedX,
+        y: speedY,
+      });
+
+      // Re-add/Update Map
+      // Layout: Top-Right
+      const mapScale = targetH / 400; // Base size H=400
+
+      // Map has 0 internal padding (visual content is the full box)
+      const mapX = resolution.w - layoutMargin - (tilePad + 600) * mapScale;
+      // Map vertical correction: The actual bounding box of content inside canvas
+      // is centered in 600x400, but we want the *edge* of that content to touch margin.
+      // However, the auto-centering logic we added to drawCanvasMap makes the visual content fill the frame.
+      // The issue is likely tilePad.
+      const mapY = layoutMargin - tilePad * mapScale;
+
+      newWidgets.push({
+        id: prev.find((w) => w.type === "map")?.id || "map1",
+        type: "map",
+        scale: mapScale,
+        rotation: prev.find((w) => w.type === "map")?.rotation || {
+          alpha: 0,
+          beta: 45,
+        },
+        x: mapX,
+        y: mapY,
+      });
+
+      return newWidgets;
+    });
+  };
+
+  const bgStyles = {
+    default: "bg-zinc-950",
+    green: "bg-[#00ff00]",
+    blue: "bg-[#0000ff]",
+    magenta: "bg-[#ff00ff]",
   };
 
   return (
-    <div className={`fixed inset-0 z-[100] flex flex-col ${bgStyles[bgMode]}`}>
+    <div className="fixed inset-0 z-[100] flex flex-col bg-zinc-950">
       {/* CONTROLS OVERLAY (Hover/Toggle) */}
       <div
         className={`absolute top-0 left-0 right-0 p-4 flex justify-between items-start transition-opacity duration-300 z-50 ${controlsVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
@@ -1577,29 +2134,56 @@ const TelemetryView = ({
           <div className="flex gap-1 items-center">
             <span className="text-[10px] uppercase font-bold text-zinc-500 px-1">
               <Layout size={12} className="inline mr-1" />
-              Preset:
+              Widgety:
             </span>
             <button
-              onClick={() => applyPreset("speed")}
-              className="p-1 text-zinc-400 hover:text-rose-300"
-              title="Tylko prędkość"
+              onClick={() => toggleWidget("speedometer")}
+              className={`p-1 hover:text-rose-300 ${widgets.find((w) => w.type === "speedometer") ? "text-rose-500" : "text-zinc-400"}`}
+              title="Prędkościomierz"
             >
               <Gauge size={16} />
             </button>
             <button
-              onClick={() => applyPreset("map")}
-              className="p-1 text-zinc-400 hover:text-rose-300"
-              title="Tylko mapa"
+              onClick={() => toggleWidget("map")}
+              className={`p-1 hover:text-rose-300 ${widgets.find((w) => w.type === "map") ? "text-rose-500" : "text-zinc-400"}`}
+              title="Mapa"
             >
               <MapIcon size={16} />
             </button>
-            <button
-              onClick={() => applyPreset("combined")}
-              className="p-1 text-zinc-400 hover:text-rose-300"
-              title="Łączony"
-            >
-              <Layout size={16} />
-            </button>
+            <div className="flex items-center gap-1 mx-1 border border-zinc-700 rounded px-1">
+              <button
+                onClick={handleAutoLayout}
+                className="p-1 text-zinc-400 hover:text-rose-300"
+                title="Szybkie rozmieszczanie"
+              >
+                <Wand2 size={16} />
+              </button>
+              <select
+                value={autoScaleFactor}
+                onChange={(e) => setAutoScaleFactor(parseFloat(e.target.value))}
+                className="bg-zinc-900 text-[10px] text-zinc-400 border-none outline-none cursor-pointer w-12"
+                title="Wielkość auto-skalowania (względem wysokości ekranu)"
+              >
+                <option value="0.2">1/5</option>
+                <option value="0.25">1/4</option>
+                <option value="0.33">1/3</option>
+                <option value="0.5">1/2</option>
+              </select>
+              <div className="w-px h-3 bg-zinc-700 mx-0.5"></div>
+              <input
+                type="number"
+                value={layoutMargin}
+                onChange={(e) =>
+                  setLayoutMargin(Math.max(0, parseInt(e.target.value)))
+                }
+                step="10"
+                className="w-10 bg-zinc-900 text-[10px] text-zinc-400 border-none outline-none text-right px-0.5"
+                title="Margines layoutu (px)"
+              />
+              <span className="text-[9px] text-zinc-600 px-1 font-bold">
+                px
+              </span>
+            </div>
           </div>
 
           <div className="w-px h-6 bg-zinc-800 mx-1"></div>
@@ -1643,6 +2227,24 @@ const TelemetryView = ({
               title="Magenta"
             ></button>
           </div>
+
+          <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
+          <div className="flex gap-2 items-center px-1">
+            <span className="text-[10px] uppercase font-bold text-zinc-500">
+              Op:
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={bgOpacity}
+              onChange={(e) => setBgOpacity(parseFloat(e.target.value))}
+              className="w-20 accent-rose-500 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer"
+              title="Przeźroczystość tła widgetów"
+            />
+          </div>
         </div>
 
         <div className="bg-zinc-900/90 backdrop-blur p-2 rounded-xl border border-zinc-800 shadow-xl flex gap-1">
@@ -1679,12 +2281,20 @@ const TelemetryView = ({
             height: resolution.h,
             transform: `scale(${containerScale})`,
           }}
-          className={`relative shadow-2xl transition-transform duration-300 ease-out origin-center ${bgMode === "default" ? "border border-zinc-800 bg-zinc-950" : ""}`}
+          className={`relative shadow-2xl transition-transform duration-300 ease-out origin-center ${bgMode === "default" ? "border border-zinc-800 bg-zinc-950" : bgStyles[bgMode]}`}
         >
+          {/* LIVE RENDERING CANVAS (Background Layer - Same as Recording) */}
+          <canvas
+            ref={recordingCanvasRef}
+            width={resolution.w}
+            height={resolution.h}
+            className="absolute top-0 left-0 pointer-events-none z-0"
+          />
+
           {/* BACKGROUND GRID (Design Mode Only) */}
           {controlsVisible && bgMode === "default" && (
             <div
-              className="absolute inset-0 opacity-10 pointer-events-none"
+              className="absolute inset-0 opacity-10 pointer-events-none z-0"
               style={{
                 backgroundImage: `linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)`,
                 backgroundSize: "50px 50px",
@@ -1692,7 +2302,7 @@ const TelemetryView = ({
             ></div>
           )}
 
-          {/* RENDER WIDGETS */}
+          {/* RENDER WIDGETS (Interactive Layer - Transparent Content) */}
           {widgets.map((w) => (
             <DraggableTile
               key={w.id}
@@ -1704,25 +2314,36 @@ const TelemetryView = ({
             >
               {w.type === "speedometer" && (
                 <Speedometer
-                  speed={currentSpeed}
-                  max={Math.ceil(maxSpeed / 10) * 10}
+                  speed={currentPoint?.smoothSpeed || currentPoint?.speed || 0}
+                  max={
+                    viewData?.summary?.maxSpeed
+                      ? Math.ceil(parseFloat(viewData.summary.maxSpeed) / 10) *
+                        10
+                      : 100
+                  }
                   size={300}
+                  className="opacity-0" // Hide DOM content, rely on Canvas
                 />
               )}
               {w.type === "map" && (
-                <div className="w-[600px] h-[400px] bg-black/10 rounded-xl relative border border-white/10 overflow-hidden">
+                <div className="w-[600px] h-[400px] rounded-xl relative overflow-hidden group">
                   <RoutePreview
                     points={viewData.points}
                     mode3D={settings.visualMode3D}
                     detailLevel={settings.detailLevel}
                     hoverIndex={hoverIndex}
                     cursorPoint={currentPoint}
-                    className="w-full h-full"
+                    rotation={w.rotation}
+                    onRotationChange={(r) =>
+                      handleUpdateWidget(w.id, { rotation: r })
+                    }
+                    className="w-full h-full border-none [&>svg]:opacity-0" // Hide SVG only, keep controls
                     transparent={true}
+                    showControls={false}
                   />
                   {/* Mini controls for map */}
                   {controlsVisible && (
-                    <div className="absolute bottom-2 right-2 flex gap-1 z-20">
+                    <div className="absolute bottom-2 right-2 flex gap-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() =>
                           setSettings((s) => ({
@@ -1771,13 +2392,28 @@ const TelemetryView = ({
 
           <div className="w-px h-8 bg-zinc-800"></div>
 
-          <div className="flex flex-col px-2">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase">
-              Czas
-            </span>
-            <span className="font-mono text-zinc-200">
-              {currentPoint?.time?.toLocaleTimeString()}
-            </span>
+          {/* Timeline */}
+          <div className="flex flex-col w-64 px-2">
+            <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase mb-1">
+              <span>Timeline</span>
+              <span className="font-mono text-zinc-200">
+                {currentPoint?.time?.toLocaleTimeString()}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={viewData.points.length - 1}
+              step={1}
+              value={hoverIndex || 0}
+              onChange={(e) => {
+                const idx = parseInt(e.target.value);
+                if (viewData.points[idx] && onSeek) {
+                  onSeek(viewData.points[idx].time);
+                }
+              }}
+              className="w-full h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-orange-500 hover:accent-rose-500"
+            />
           </div>
         </div>
       )}
@@ -1859,7 +2495,8 @@ const SkiTrackerApp = () => {
   const currentPoint = useMemo(() => {
     if (!viewData?.points?.length) return null;
     if (isPlaying && interpolatedPoint) return interpolatedPoint;
-    if (hoverIndex !== null && viewData.points[hoverIndex]) return viewData.points[hoverIndex];
+    if (hoverIndex !== null && viewData.points[hoverIndex])
+      return viewData.points[hoverIndex];
     return viewData.points[0];
   }, [viewData, isPlaying, interpolatedPoint, hoverIndex]);
 
@@ -1950,8 +2587,15 @@ const SkiTrackerApp = () => {
     if (hoverIndex !== null) {
       const start = viewData.points[0].time.getTime();
       const current = viewData.points[hoverIndex].time.getTime();
-      playbackTimeRef.current = current - start;
+      const derivedTime = current - start;
 
+      // Only sync if significant drift (meaning context changed, e.g. hover vs seek)
+      // This preserves the precise playbackTimeRef set by handleSeek
+      if (Math.abs(playbackTimeRef.current - derivedTime) > 2000) {
+        playbackTimeRef.current = derivedTime;
+      }
+
+      // Auto-restart if at the very end
       if (hoverIndex >= viewData.points.length - 1) {
         playbackTimeRef.current = 0;
       }
@@ -2026,6 +2670,23 @@ const SkiTrackerApp = () => {
     const speeds = [1, 2, 5, 10, 20, 50];
     const nextIdx = (speeds.indexOf(playbackSpeed) + 1) % speeds.length;
     setPlaybackSpeed(speeds[nextIdx]);
+  };
+
+  const handleSeek = (newTime) => {
+    const t = newTime.getTime();
+    if (viewData?.points?.[0]) {
+      playbackTimeRef.current = t - viewData.points[0].time.getTime();
+    }
+    lastFrameRef.current = performance.now(); // Reset delta tracking
+
+    if (!viewData?.points) return;
+
+    // Find nearest point and update state immediately
+    const nextIdx = viewData.points.findIndex((p) => p.time.getTime() >= t);
+    if (nextIdx !== -1) {
+      setHoverIndex(nextIdx);
+      setInterpolatedPoint(viewData.points[nextIdx]);
+    }
   };
 
   const filteredSegments = useMemo(() => {
@@ -2838,6 +3499,7 @@ const SkiTrackerApp = () => {
             playbackSpeed={playbackSpeed}
             settings={settings}
             setSettings={setSettings}
+            onSeek={handleSeek}
           />
         )}
       </main>
