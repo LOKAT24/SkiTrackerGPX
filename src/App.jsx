@@ -42,6 +42,14 @@ import {
   Play,
   Pause,
   FastForward,
+  Monitor,
+  Video,
+  Eye,
+  EyeOff,
+  Download,
+  Move,
+  Maximize,
+  Grid,
 } from "lucide-react";
 
 // --- ATOMS (Zgodne z UiStyle.jsx) ---
@@ -744,7 +752,10 @@ const RoutePreview = ({
   mode3D,
   detailLevel = 5000,
   hoverIndex,
+  cursorPoint: externalCursorPoint, // Renamed to avoid confusion with internal calculation
   onHover,
+  className = "",
+  transparent = false,
 }) => {
   if (!points || points.length === 0) return null;
 
@@ -767,7 +778,7 @@ const RoutePreview = ({
     }
   }, [points, mode3D, detailLevel]);
 
-  const normalizedPoints = useMemo(() => {
+  const bounds = useMemo(() => {
     const lats = renderData.map((p) => p.lat);
     const lons = renderData.map((p) => p.lon);
     const eles = renderData.map((p) => p.ele);
@@ -783,13 +794,19 @@ const RoutePreview = ({
     const lonRange = maxLon - minLon || 0.00001;
     const eleRange = maxEle - minEle || 1;
 
+    return { minLat, minLon, minEle, latRange, lonRange, eleRange };
+  }, [renderData]);
+
+  const normalizedPoints = useMemo(() => {
+    const { minLat, minLon, minEle, latRange, lonRange, eleRange } = bounds;
+
     return renderData.map((p, idx) => ({
       x: (p.lon - minLon) / lonRange - 0.5,
       z: -((p.lat - minLat) / latRange - 0.5),
       y: (p.ele - minEle) / eleRange,
       originalIndex: Math.floor(idx * (points.length / renderData.length)),
     }));
-  }, [renderData, points.length]);
+  }, [renderData, points.length, bounds]);
 
   const project = useCallback((x, y, z, cosA, sinA, cosB, sinB) => {
     const ELEVATION_SCALE = 0.4;
@@ -812,11 +829,16 @@ const RoutePreview = ({
     const sinB = Math.sin(radBeta);
 
     if (!mode3D) {
-      return normalizedPoints.map((p) => ({
-        sx: (p.x + 0.5) * 100,
-        sy: 50 + p.z * 100,
-        originalIndex: p.originalIndex,
-      }));
+      // 2D Rotation Logic
+      return normalizedPoints.map((p) => {
+        const rx = p.x * cosA - p.z * sinA;
+        const rz = p.x * sinA + p.z * cosA;
+        return {
+          sx: 50 + rx * 80,
+          sy: 50 + rz * 80,
+          originalIndex: p.originalIndex,
+        };
+      });
     } else {
       return normalizedPoints.map((p) => {
         const { sx, sy } = project(p.x, p.y, p.z, cosA, sinA, cosB, sinB);
@@ -856,7 +878,7 @@ const RoutePreview = ({
   }, [rotation, mode3D, project]);
 
   const northMarker = useMemo(() => {
-    if (!mode3D) return null;
+    // Show marker in both 2D and 3D
     const { alpha, beta } = rotation;
     const radAlpha = (alpha * Math.PI) / 180;
     const radBeta = (beta * Math.PI) / 180;
@@ -865,31 +887,89 @@ const RoutePreview = ({
     const cosB = Math.cos(radBeta);
     const sinB = Math.sin(radBeta);
 
+    if (!mode3D) {
+      // 2D Projection for North Marker (z = -0.55)
+      // We use same logic as points but for specific coordinate
+      const pX = 0;
+      const pZ = -0.55;
+      const rx = pX * cosA - pZ * sinA;
+      const rz = pX * sinA + pZ * cosA;
+      return { sx: 50 + rx * 80, sy: 50 + rz * 80 };
+    }
+
     return project(0, 0, -0.55, cosA, sinA, cosB, sinB);
   }, [rotation, mode3D, project]);
 
-  let cursorPoint = null;
-  if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
-    let bestP = null;
-    let minIdxDiff = Infinity;
-    for (const p of projectedPoints) {
-      const diff = Math.abs(p.originalIndex - hoverIndex);
-      if (diff < minIdxDiff) {
-        minIdxDiff = diff;
-        bestP = p;
+  const cursorPoint = useMemo(() => {
+    // 1. External Interpolated Point (Smooth Animation)
+    if (externalCursorPoint) {
+      const { minLat, minLon, minEle, latRange, lonRange, eleRange } = bounds;
+
+      // Normalize
+      const valLat =
+        externalCursorPoint.lat !== undefined
+          ? externalCursorPoint.lat
+          : externalCursorPoint.x; // Handle inconsistent naming if any
+      const valLon =
+        externalCursorPoint.lon !== undefined
+          ? externalCursorPoint.lon
+          : externalCursorPoint.y;
+
+      const nx = (externalCursorPoint.lon - minLon) / lonRange - 0.5;
+      const nz = -((externalCursorPoint.lat - minLat) / latRange - 0.5);
+      const ny = (externalCursorPoint.ele - minEle) / eleRange;
+
+      const { alpha, beta } = rotation;
+      const radAlpha = (alpha * Math.PI) / 180;
+      const radBeta = (beta * Math.PI) / 180;
+      const cosA = Math.cos(radAlpha);
+      const sinA = Math.sin(radAlpha);
+      const cosB = Math.cos(radBeta);
+      const sinB = Math.sin(radBeta);
+
+      if (!mode3D) {
+        const rx = nx * cosA - nz * sinA;
+        const rz = nx * sinA + nz * cosA;
+        // Scale 80 matches the projectedPoints scale usually
+        return { sx: 50 + rx * 80, sy: 50 + rz * 80 };
       }
+      return project(nx, ny, nz, cosA, sinA, cosB, sinB);
     }
-    cursorPoint = bestP;
-  }
+
+    // 2. Fallback to hoverIndex snapping
+    if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
+      let bestP = null;
+      let minIdxDiff = Infinity;
+      for (const p of projectedPoints) {
+        const diff = Math.abs(p.originalIndex - hoverIndex);
+        if (diff < minIdxDiff) {
+          minIdxDiff = diff;
+          bestP = p;
+        }
+      }
+      return bestP;
+    }
+    return null;
+  }, [
+    externalCursorPoint,
+    hoverIndex,
+    points.length,
+    bounds,
+    rotation,
+    mode3D,
+    project,
+    projectedPoints,
+  ]);
 
   const handleMouseDown = (e) => {
-    if (!mode3D) return;
+    e.stopPropagation(); // Stop DraggableTile
     isDragging.current = true;
     lastMousePos.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseMove = (e) => {
-    if (isDragging.current && mode3D) {
+    if (isDragging.current) {
+      e.stopPropagation(); // Stop DraggableTile
       const deltaX = e.clientX - lastMousePos.current.x;
       const deltaY = e.clientY - lastMousePos.current.y;
       lastMousePos.current = { x: e.clientX, y: e.clientY };
@@ -897,7 +977,9 @@ const RoutePreview = ({
       requestAnimationFrame(() => {
         setRotation((prev) => ({
           alpha: (prev.alpha - deltaX * 0.5) % 360,
-          beta: Math.max(10, Math.min(90, prev.beta + deltaY * 0.5)),
+          beta: mode3D
+            ? Math.max(10, Math.min(90, prev.beta + deltaY * 0.5))
+            : prev.beta,
         }));
       });
       return;
@@ -961,7 +1043,7 @@ const RoutePreview = ({
   return (
     <div
       ref={containerRef}
-      className={`w-full h-64 flex items-center justify-center p-4 rounded-xl border bg-zinc-950/30 border-zinc-800/30 overflow-hidden relative select-none ${mode3D ? "cursor-move" : "cursor-crosshair"}`}
+      className={`w-full h-64 flex items-center justify-center p-4 rounded-xl border overflow-hidden relative select-none ${transparent ? "" : "bg-zinc-950/30 border-zinc-800/30"} ${mode3D ? "cursor-move" : "cursor-crosshair"} ${className}`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -1059,6 +1141,650 @@ const RoutePreview = ({
   );
 };
 
+// --- TELEMETRIA / ODTWARZANIE ---
+
+const Speedometer = ({ speed = 0, max = 100, size = 200, className = "" }) => {
+  const radius = 80;
+  const center = 100;
+  const startAngle = -120;
+  const endAngle = 120;
+  const strokeWidth = 12;
+
+  // Convert degrees to radians and get coordinates
+  const getCoords = (deg) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return {
+      x: center + radius * Math.cos(rad),
+      y: center + radius * Math.sin(rad),
+    };
+  };
+
+  const start = getCoords(startAngle);
+  const end = getCoords(endAngle);
+
+  // SVG Path 'd' attribute for the arc
+  const d = [
+    "M",
+    start.x,
+    start.y,
+    "A",
+    radius,
+    radius,
+    0,
+    endAngle - startAngle > 180 ? 1 : 0,
+    1,
+    end.x,
+    end.y,
+  ].join(" ");
+
+  // Calculate arc length for dasharray
+  const arcLen = 2 * Math.PI * radius * ((endAngle - startAngle) / 360);
+
+  // Animation value
+  const val = Math.max(0, Math.min(speed, max));
+  const percent = val / max;
+  const offset = arcLen * (1 - percent);
+
+  // Generate ticks
+  const ticks = [];
+  const tickCount = 11;
+  for (let i = 0; i < tickCount; i++) {
+    const p = i / (tickCount - 1);
+    const angle = startAngle + p * 240;
+    const tPos = getCoords(angle);
+    // Move tick slightly inward
+    // We can use same math with radius-15
+    const rad = ((angle - 90) * Math.PI) / 180;
+    const rIn = radius - 18;
+    const xIn = center + rIn * Math.cos(rad);
+    const yIn = center + rIn * Math.sin(rad);
+
+    ticks.push({
+      x1: tPos.x,
+      y1: tPos.y,
+      x2: xIn,
+      y2: yIn,
+      isMajor: i % 2 === 0,
+    });
+  }
+
+  return (
+    <div
+      className={`relative flex flex-col items-center justify-center font-sans select-none ${className}`}
+      style={{ width: size, height: size }}
+    >
+      <svg viewBox="0 0 200 200" className="w-full h-full overflow-visible">
+        <defs>
+          <linearGradient id="speedGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#fdba74" />
+            <stop offset="100%" stopColor="#fb7185" />
+          </linearGradient>
+          <filter id="glow-speed" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        {/* Track Background */}
+        <path
+          d={d}
+          fill="none"
+          stroke="#27272a"
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+        />
+
+        {/* Ticks (Subtle) */}
+        {ticks.map((t, i) => (
+          <line
+            key={i}
+            x1={t.x1}
+            y1={t.y1}
+            x2={t.x2}
+            y2={t.y2}
+            stroke={t.isMajor ? "#52525b" : "#3f3f46"}
+            strokeWidth={t.isMajor ? 3 : 1}
+            strokeLinecap="round"
+          />
+        ))}
+
+        {/* Progress Value */}
+        <path
+          d={d}
+          fill="none"
+          stroke="url(#speedGradient)"
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${arcLen} ${arcLen}`}
+          strokeDashoffset={offset}
+          filter="url(#glow-speed)"
+          className="transition-[stroke-dashoffset] duration-300 ease-out"
+        />
+      </svg>
+
+      {/* Digital Readout */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center mt-6">
+        <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-orange-300 to-rose-400 drop-shadow-sm tracking-tighter">
+          {Math.round(val)}
+        </span>
+        <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-[0.2em] opacity-80">
+          km/h
+        </span>
+      </div>
+    </div>
+  );
+};
+
+const DraggableTile = ({
+  item,
+  onUpdate,
+  selectedId,
+  onSelect,
+  scaleData, // { containerScale }
+  children,
+}) => {
+  const handleMouseDown = (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    onSelect(item.id);
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const initialX = item.x;
+    const initialY = item.y;
+
+    const handleMouseMove = (ev) => {
+      const dx = (ev.clientX - startX) / scaleData;
+      const dy = (ev.clientY - startY) / scaleData;
+      onUpdate(item.id, { x: initialX + dx, y: initialY + dy });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handleScaleCtx = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startY = e.clientY;
+    const startScale = item.scale || 1;
+
+    const handleMouseMove = (ev) => {
+      const dy = (startY - ev.clientY) * 0.005;
+      const newScale = Math.max(0.1, startScale + dy);
+      onUpdate(item.id, { scale: newScale });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const isSelected = selectedId === item.id;
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      className={`absolute cursor-move group select-none ${isSelected ? "z-50" : "z-10"}`} // z-index boost handled by parent ideally but this works OK
+      style={{
+        left: item.x,
+        top: item.y,
+        transform: `scale(${item.scale || 1})`,
+        transformOrigin: "top left",
+      }}
+    >
+      <div
+        className={`relative transition-all duration-200 p-3 ${
+          isSelected
+            ? "ring-2 ring-rose-500 bg-zinc-900/40 rounded-xl backdrop-blur-sm"
+            : "hover:ring-1 hover:ring-zinc-700/50 rounded-xl"
+        }`}
+      >
+        {children}
+
+        {/* Info & Controls overlay */}
+        {isSelected && (
+          <>
+            <div className="absolute -top-6 left-0 bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap pointer-events-none shadow-lg z-50">
+              x:{Math.round(item.x)} y:{Math.round(item.y)} s:
+              {(item.scale || 1).toFixed(2)}
+            </div>
+
+            <div
+              onMouseDown={handleScaleCtx}
+              className="absolute -bottom-3 -right-3 w-6 h-6 flex items-center justify-center cursor-ns-resize bg-zinc-800 border border-zinc-600 rounded-full text-zinc-300 hover:text-white hover:bg-rose-500 shadow-lg z-50"
+              title="Przeciągnij góra/dół aby skalować"
+            >
+              <Maximize size={12} />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const RESOLUTIONS = [
+  { w: 1280, h: 720, label: "720p HD" },
+  { w: 1920, h: 1080, label: "1080p FHD" },
+  { w: 2560, h: 1440, label: "1440p QHD" },
+  { w: 3840, h: 2160, label: "4K UHD" },
+];
+
+const TelemetryView = ({
+  viewData,
+  currentPoint,
+  hoverIndex,
+  isPlaying,
+  onClose,
+  togglePlay,
+  toggleSpeed,
+  playbackSpeed,
+  settings,
+  setSettings,
+}) => {
+  // State for Virtual Studio
+  const [resolution, setResolution] = useState(RESOLUTIONS[1]); // Default 1080p
+  const [containerScale, setContainerScale] = useState(1);
+  const containerRef = useRef(null);
+
+  // Widgets State
+  const [widgets, setWidgets] = useState([
+    { id: "speed1", type: "speedometer", x: 100, y: 700, scale: 1.5 },
+    { id: "map1", type: "map", x: 1200, y: 50, scale: 1.0 },
+  ]);
+  const [selectedWidgetId, setSelectedWidgetId] = useState(null);
+
+  const [bgMode, setBgMode] = useState("default"); // default, green, blue, magenta
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+
+  // Auto-fit container
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        const scaleW = (clientWidth - 40) / resolution.w; // 20px padding
+        const scaleH = (clientHeight - 40) / resolution.h;
+        setContainerScale(Math.min(scaleW, scaleH));
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, [resolution]);
+
+  // Background styles
+  const bgStyles = {
+    default: "bg-zinc-950",
+    green: "bg-[#00ff00]",
+    blue: "bg-[#0000ff]",
+    magenta: "bg-[#ff00ff]",
+  };
+
+  const currentSpeed = currentPoint?.smoothSpeed || currentPoint?.speed || 0;
+  const maxSpeed = viewData.summary.maxSpeed
+    ? parseFloat(viewData.summary.maxSpeed)
+    : 100;
+
+  const handleUpdateWidget = (id, newProps) => {
+    setWidgets((prev) =>
+      prev.map((w) => (w.id === id ? { ...w, ...newProps } : w)),
+    );
+  };
+
+  const handleStartRecording = async () => {
+    try {
+      // Suggestion: use browser tab capture
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: "browser" },
+        audio: false,
+        selfBrowserSurface: "include",
+      });
+
+      const mimeType = MediaRecorder.isTypeSupported("video/webm; codecs=vp9")
+        ? "video/webm; codecs=vp9"
+        : "video/webm";
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 8000000,
+      }); // High bitrate
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          recordedChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, {
+          type: "video/webm",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `skitracker_telemetry_${resolution.label}_${new Date().toISOString().slice(0, 19).replace(/[:]/g, "-")}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        recordedChunksRef.current = [];
+        setIsRecording(false);
+        setControlsVisible(true);
+        stream.getTracks().forEach((track) => track.stop());
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setControlsVisible(false);
+
+      stream.getVideoTracks()[0].onended = () => {
+        if (recorder.state === "recording") {
+          recorder.stop();
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+    } catch (err) {
+      console.error("Error starting recording:", err);
+      // alert("Nagrywanie anulowane.");
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state === "recording"
+    ) {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  // Layout Presets
+  const applyPreset = (type) => {
+    if (type === "speed") {
+      setWidgets([
+        {
+          id: "speed1",
+          type: "speedometer",
+          x: resolution.w / 2 - 150,
+          y: resolution.h - 400,
+          scale: 2.0,
+        },
+      ]);
+    } else if (type === "map") {
+      setWidgets([{ id: "map1", type: "map", x: 50, y: 50, scale: 1.5 }]);
+    } else if (type === "combined") {
+      setWidgets([
+        {
+          id: "speed1",
+          type: "speedometer",
+          x: 50,
+          y: resolution.h - 350,
+          scale: 1.0,
+        },
+        { id: "map1", type: "map", x: resolution.w - 600, y: 50, scale: 1.0 }, // Approximate
+      ]);
+    }
+  };
+
+  return (
+    <div className={`fixed inset-0 z-[100] flex flex-col ${bgStyles[bgMode]}`}>
+      {/* CONTROLS OVERLAY (Hover/Toggle) */}
+      <div
+        className={`absolute top-0 left-0 right-0 p-4 flex justify-between items-start transition-opacity duration-300 z-50 ${controlsVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+      >
+        <div className="flex gap-2 bg-zinc-900/90 backdrop-blur p-2 rounded-xl border border-zinc-800 shadow-xl overflow-x-auto max-w-[80vw]">
+          <Button variant="secondary" size="sm" onClick={onClose} icon={X}>
+            Zamknij
+          </Button>
+
+          <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
+          <div className="flex gap-1 items-center">
+            <span className="text-[10px] uppercase font-bold text-zinc-500 px-1">
+              <Monitor size={12} className="inline mr-1" />
+              Res:
+            </span>
+            {RESOLUTIONS.map((res) => (
+              <button
+                key={res.label}
+                onClick={() => setResolution(res)}
+                className={`px-2 py-1 text-xs rounded-md font-bold transition-all ${resolution.label === res.label ? "bg-rose-500 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+              >
+                {res.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
+          <div className="flex gap-1 items-center">
+            <span className="text-[10px] uppercase font-bold text-zinc-500 px-1">
+              <Layout size={12} className="inline mr-1" />
+              Preset:
+            </span>
+            <button
+              onClick={() => applyPreset("speed")}
+              className="p-1 text-zinc-400 hover:text-rose-300"
+              title="Tylko prędkość"
+            >
+              <Gauge size={16} />
+            </button>
+            <button
+              onClick={() => applyPreset("map")}
+              className="p-1 text-zinc-400 hover:text-rose-300"
+              title="Tylko mapa"
+            >
+              <MapIcon size={16} />
+            </button>
+            <button
+              onClick={() => applyPreset("combined")}
+              className="p-1 text-zinc-400 hover:text-rose-300"
+              title="Łączony"
+            >
+              <Layout size={16} />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
+          <div className="flex gap-1 items-center">
+            <Button
+              variant={isRecording ? "danger" : "secondary"}
+              size="xs"
+              onClick={isRecording ? handleStopRecording : handleStartRecording}
+              icon={Video}
+              title="Nagraj widok (Pamiętaj o wyborze Tego Okna/Karty)"
+            >
+              {isRecording ? "STOP (Zapisz)" : "Nagraj"}
+            </Button>
+          </div>
+
+          <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
+          <div className="flex gap-1 items-center">
+            <span className="text-[10px] uppercase font-bold text-zinc-500 px-1">
+              Chroma:
+            </span>
+            <button
+              onClick={() => setBgMode("default")}
+              className="w-5 h-5 rounded-full bg-zinc-900 border border-zinc-700"
+              title="Off"
+            ></button>
+            <button
+              onClick={() => setBgMode("green")}
+              className="w-5 h-5 rounded-full bg-[#00ff00] border border-zinc-700"
+              title="Green"
+            ></button>
+            <button
+              onClick={() => setBgMode("blue")}
+              className="w-5 h-5 rounded-full bg-[#0000ff] border border-zinc-700"
+              title="Blue"
+            ></button>
+            <button
+              onClick={() => setBgMode("magenta")}
+              className="w-5 h-5 rounded-full bg-[#ff00ff] border border-zinc-700"
+              title="Magenta"
+            ></button>
+          </div>
+        </div>
+
+        <div className="bg-zinc-900/90 backdrop-blur p-2 rounded-xl border border-zinc-800 shadow-xl flex gap-1">
+          <button
+            onClick={() => setControlsVisible(false)}
+            className="p-2 text-zinc-400 hover:text-zinc-200"
+            title="Ukryj menu (Nagrywanie)"
+          >
+            <EyeOff size={18} />
+          </button>
+        </div>
+      </div>
+
+      {/* HIDDEN CONTROLS RESTORE BUTTON */}
+      {!controlsVisible && (
+        <button
+          onClick={() => setControlsVisible(true)}
+          className="absolute top-4 right-4 z-50 p-2 bg-zinc-900/30 hover:bg-zinc-900/80 text-zinc-500 hover:text-white rounded-full transition-all"
+        >
+          <Eye size={20} />
+        </button>
+      )}
+
+      {/* MAIN CONTENT STAGE */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-hidden flex items-center justify-center relative bg-black/20"
+        onMouseDown={() => setSelectedWidgetId(null)}
+      >
+        {/* VIRTUAL SCREEN CONTAINER */}
+        <div
+          style={{
+            width: resolution.w,
+            height: resolution.h,
+            transform: `scale(${containerScale})`,
+          }}
+          className={`relative shadow-2xl transition-transform duration-300 ease-out origin-center ${bgMode === "default" ? "border border-zinc-800 bg-zinc-950" : ""}`}
+        >
+          {/* BACKGROUND GRID (Design Mode Only) */}
+          {controlsVisible && bgMode === "default" && (
+            <div
+              className="absolute inset-0 opacity-10 pointer-events-none"
+              style={{
+                backgroundImage: `linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)`,
+                backgroundSize: "50px 50px",
+              }}
+            ></div>
+          )}
+
+          {/* RENDER WIDGETS */}
+          {widgets.map((w) => (
+            <DraggableTile
+              key={w.id}
+              item={w}
+              onUpdate={handleUpdateWidget}
+              scaleData={containerScale}
+              selectedId={selectedWidgetId}
+              onSelect={setSelectedWidgetId}
+            >
+              {w.type === "speedometer" && (
+                <Speedometer
+                  speed={currentSpeed}
+                  max={Math.ceil(maxSpeed / 10) * 10}
+                  size={300}
+                />
+              )}
+              {w.type === "map" && (
+                <div className="w-[600px] h-[400px] bg-black/10 rounded-xl relative border border-white/10 overflow-hidden">
+                  <RoutePreview
+                    points={viewData.points}
+                    mode3D={settings.visualMode3D}
+                    detailLevel={settings.detailLevel}
+                    hoverIndex={hoverIndex}
+                    cursorPoint={currentPoint}
+                    className="w-full h-full"
+                    transparent={true}
+                  />
+                  {/* Mini controls for map */}
+                  {controlsVisible && (
+                    <div className="absolute bottom-2 right-2 flex gap-1 z-20">
+                      <button
+                        onClick={() =>
+                          setSettings((s) => ({
+                            ...s,
+                            visualMode3D: !s.visualMode3D,
+                          }))
+                        }
+                        className="px-2 py-1 bg-black/50 text-white text-[10px] rounded"
+                      >
+                        {settings.visualMode3D ? "2D" : "3D"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </DraggableTile>
+          ))}
+        </div>
+      </div>
+
+      {/* PLAYBACK CONTROLS (Floating Bottom) */}
+      {controlsVisible && (
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-zinc-900/90 backdrop-blur border border-zinc-800 p-2 rounded-2xl flex items-center gap-4 shadow-2xl z-50">
+          <button
+            onClick={togglePlay}
+            className="w-12 h-12 flex items-center justify-center rounded-xl bg-gradient-to-br from-orange-400 to-rose-500 text-zinc-900 shadow-lg shadow-rose-500/20 hover:scale-105 transition-transform"
+          >
+            {isPlaying ? (
+              <Pause size={24} fill="currentColor" />
+            ) : (
+              <Play size={24} fill="currentColor" className="ml-1" />
+            )}
+          </button>
+
+          <div className="flex flex-col">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase">
+              Prędkość
+            </span>
+            <button
+              onClick={toggleSpeed}
+              className="font-mono text-zinc-200 font-bold hover:text-rose-400 w-12 text-center"
+            >
+              x{playbackSpeed}
+            </button>
+          </div>
+
+          <div className="w-px h-8 bg-zinc-800"></div>
+
+          <div className="flex flex-col px-2">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase">
+              Czas
+            </span>
+            <span className="font-mono text-zinc-200">
+              {currentPoint?.time?.toLocaleTimeString()}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // --- GŁÓWNA APLIKACJA ---
 
 const SkiTrackerApp = () => {
@@ -1081,14 +1807,19 @@ const SkiTrackerApp = () => {
   // Filtry
   const [filterType, setFilterType] = useState("descent");
   const [sortType, setSortType] = useState("time");
+  const [sortDirection, setSortDirection] = useState("asc");
 
   // Przycinanie
   const [trimMode, setTrimMode] = useState(false);
   const [trimRange, setTrimRange] = useState(null);
 
+  // Telemetria
+  const [showTelemetry, setShowTelemetry] = useState(false);
+
   // Playback
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [interpolatedPoint, setInterpolatedPoint] = useState(null);
   const lastFrameRef = useRef(0);
   const playbackTimeRef = useRef(0);
 
@@ -1124,6 +1855,13 @@ const SkiTrackerApp = () => {
       segmentStartDist: segmentPoints[0].cumDist,
     };
   }, [trackData, selectedSegmentIdx]);
+
+  const currentPoint = useMemo(() => {
+    if (!viewData?.points?.length) return null;
+    if (isPlaying && interpolatedPoint) return interpolatedPoint;
+    if (hoverIndex !== null && viewData.points[hoverIndex]) return viewData.points[hoverIndex];
+    return viewData.points[0];
+  }, [viewData, isPlaying, interpolatedPoint, hoverIndex]);
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -1244,6 +1982,36 @@ const SkiTrackerApp = () => {
       );
       if (nextIdx !== -1) {
         setHoverIndex(nextIdx);
+
+        // Interpolacja
+        if (nextIdx > 0) {
+          const p2 = viewData.points[nextIdx];
+          const p1 = viewData.points[nextIdx - 1];
+          const t1 = p1.time.getTime();
+          const t2 = p2.time.getTime();
+          if (t2 > t1) {
+            const r = (targetT - t1) / (t2 - t1);
+            const lerp = (a, b) => a + (b - a) * r;
+
+            setInterpolatedPoint({
+              ...p1, // bazowe propsy
+              time: new Date(targetT),
+              lat: lerp(p1.lat, p2.lat),
+              lon: lerp(p1.lon, p2.lon),
+              ele: lerp(p1.ele, p2.ele),
+              dist: lerp(p1.dist, p2.dist),
+              speed: lerp(p1.speed, p2.speed),
+              smoothSpeed: lerp(
+                p1.smoothSpeed || p1.speed,
+                p2.smoothSpeed || p2.speed,
+              ),
+            });
+          } else {
+            setInterpolatedPoint(p2);
+          }
+        } else {
+          setInterpolatedPoint(viewData.points[nextIdx]);
+        }
       }
 
       animId = requestAnimationFrame(animate);
@@ -1272,18 +2040,43 @@ const SkiTrackerApp = () => {
       list = list.filter((s) => s.type === filterType);
     }
 
-    if (sortType === "speed") {
-      list.sort((a, b) => b.maxSpeedVal - a.maxSpeedVal);
-    } else if (sortType === "distance") {
-      list.sort((a, b) => b.distanceVal - a.distanceVal);
-    } else if (sortType === "duration") {
-      list.sort((a, b) => b.durationVal - a.durationVal);
-    } else {
-      list.sort((a, b) => a.startTime - b.startTime);
-    }
+    const multiplier = sortDirection === "asc" ? 1 : -1;
+
+    list.sort((a, b) => {
+      let valA, valB;
+      if (sortType === "speed") {
+        valA = a.maxSpeedVal;
+        valB = b.maxSpeedVal;
+      } else if (sortType === "distance") {
+        valA = a.distanceVal;
+        valB = b.distanceVal;
+      } else if (sortType === "duration") {
+        valA = a.durationVal;
+        valB = b.durationVal;
+      } else {
+        // time
+        valA = a.startTime.getTime();
+        valB = b.startTime.getTime();
+      }
+
+      return (valA - valB) * multiplier;
+    });
 
     return list;
-  }, [trackData, filterType, sortType]);
+  }, [trackData, filterType, sortType, sortDirection]);
+
+  const handleSort = (type) => {
+    if (sortType === type) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortType(type);
+      if (type === "time") {
+        setSortDirection("asc");
+      } else {
+        setSortDirection("desc");
+      }
+    }
+  };
 
   return (
     <div className="min-h-screen font-sans bg-zinc-950 text-zinc-100 selection:bg-rose-500/30 pb-12">
@@ -1411,6 +2204,18 @@ const SkiTrackerApp = () => {
                   </>
                 )}
               </div>
+
+              {viewData.isSegment && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    icon={Monitor}
+                    onClick={() => setShowTelemetry(true)}
+                  >
+                    Telemetria
+                  </Button>
+                </div>
+              )}
 
               {!viewData.isSegment && (
                 <div className="flex gap-2">
@@ -1693,6 +2498,7 @@ const SkiTrackerApp = () => {
                       mode3D={settings.visualMode3D}
                       detailLevel={settings.detailLevel}
                       hoverIndex={hoverIndex}
+                      cursorPoint={currentPoint}
                       onHover={handleHover}
                     />
 
@@ -1878,28 +2684,52 @@ const SkiTrackerApp = () => {
                     </span>
                     <div className="flex flex-wrap bg-zinc-950 rounded-lg p-1 border border-zinc-800">
                       <button
-                        onClick={() => setSortType("time")}
-                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "time" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                        onClick={() => handleSort("time")}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "time" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
                       >
-                        Chronologicznie
+                        Chronologicznie{" "}
+                        {sortType === "time" &&
+                          (sortDirection === "asc" ? (
+                            <ArrowUp size={12} />
+                          ) : (
+                            <ArrowDown size={12} />
+                          ))}
                       </button>
                       <button
-                        onClick={() => setSortType("duration")}
-                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "duration" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                        onClick={() => handleSort("duration")}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "duration" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
                       >
-                        Czas trwania
+                        Czas trwania{" "}
+                        {sortType === "duration" &&
+                          (sortDirection === "asc" ? (
+                            <ArrowUp size={12} />
+                          ) : (
+                            <ArrowDown size={12} />
+                          ))}
                       </button>
                       <button
-                        onClick={() => setSortType("distance")}
-                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "distance" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                        onClick={() => handleSort("distance")}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "distance" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
                       >
-                        Dystans
+                        Dystans{" "}
+                        {sortType === "distance" &&
+                          (sortDirection === "asc" ? (
+                            <ArrowUp size={12} />
+                          ) : (
+                            <ArrowDown size={12} />
+                          ))}
                       </button>
                       <button
-                        onClick={() => setSortType("speed")}
-                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "speed" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                        onClick={() => handleSort("speed")}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "speed" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
                       >
-                        V-Max
+                        V-Max{" "}
+                        {sortType === "speed" &&
+                          (sortDirection === "asc" ? (
+                            <ArrowUp size={12} />
+                          ) : (
+                            <ArrowDown size={12} />
+                          ))}
                       </button>
                     </div>
                   </div>
@@ -1988,6 +2818,27 @@ const SkiTrackerApp = () => {
               </div>
             )}
           </div>
+        )}
+
+        {showTelemetry && viewData && (
+          <TelemetryView
+            viewData={viewData}
+            currentPoint={
+              isPlaying && interpolatedPoint
+                ? interpolatedPoint
+                : hoverIndex !== null
+                  ? viewData.points[hoverIndex]
+                  : viewData.points[0]
+            }
+            hoverIndex={hoverIndex}
+            isPlaying={isPlaying}
+            onClose={() => setShowTelemetry(false)}
+            togglePlay={togglePlay}
+            toggleSpeed={toggleSpeed}
+            playbackSpeed={playbackSpeed}
+            settings={settings}
+            setSettings={setSettings}
+          />
         )}
       </main>
     </div>
