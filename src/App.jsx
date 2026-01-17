@@ -2061,7 +2061,7 @@ const TelemetryView = ({
         // Calc color
         const speed = p1.speed || 0;
         const ratio = Math.min(1, Math.max(0, speed / maxSpeed));
-        
+
         // Simple Heatmap: Blue (0) -> Green -> Yellow -> Red (1)
         // or more aesthetic: Indigo -> Purple -> Orange -> Rose
         // Let's use HSL for smooth transition
