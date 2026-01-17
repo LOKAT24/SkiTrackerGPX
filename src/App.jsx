@@ -1,0 +1,1997 @@
+import React, {
+  useState,
+  useMemo,
+  useRef,
+  useEffect,
+  useCallback,
+} from "react";
+import {
+  Layout,
+  UploadCloud,
+  Activity,
+  Clock,
+  Map as MapIcon,
+  Mountain,
+  ArrowUpRight,
+  ArrowDownRight,
+  FileCode,
+  X,
+  Zap,
+  Check,
+  Navigation,
+  ArrowDown,
+  ArrowUp,
+  Timer,
+  TrendingUp,
+  ArrowLeft,
+  Gauge,
+  Settings,
+  Layers,
+  Sliders,
+  Move3d,
+  Rotate3d,
+  Box,
+  Cpu,
+  Crosshair,
+  Scissors,
+  Save,
+  MousePointerClick,
+  GripVertical,
+  Filter,
+  ArrowUpDown,
+  Play,
+  Pause,
+  FastForward,
+} from "lucide-react";
+
+// --- ATOMS (Zgodne z UiStyle.jsx) ---
+
+const Button = ({
+  as: Component = "button",
+  children,
+  variant = "primary",
+  size = "sm",
+  icon: Icon,
+  className = "",
+  ...props
+}) => {
+  const baseStyles =
+    "inline-flex items-center justify-center rounded-xl font-bold transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50 disabled:cursor-not-allowed";
+
+  const variants = {
+    primary:
+      "bg-gradient-to-r from-orange-300 to-rose-400 hover:from-orange-200 hover:to-rose-300 text-zinc-900 shadow-lg shadow-rose-500/20 border-0",
+    secondary:
+      "bg-zinc-800/50 text-zinc-200 border border-zinc-700/50 hover:bg-zinc-800 hover:border-zinc-600 shadow-sm backdrop-blur-sm",
+    ghost: "text-zinc-400 hover:bg-zinc-800/50 hover:text-rose-300",
+    danger:
+      "bg-rose-950/30 text-rose-300 border border-rose-900/30 hover:bg-rose-900/40",
+  };
+
+  const sizes = {
+    xs: "px-2.5 py-1 text-xs",
+    sm: "px-4 py-1.5 text-sm",
+    md: "px-6 py-2.5 text-sm",
+    lg: "px-8 py-3 text-base",
+  };
+
+  return (
+    <Component
+      className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`}
+      {...props}
+    >
+      {Icon && (
+        <Icon
+          size={size === "md" ? 18 : 16}
+          className={variant === "primary" ? "text-zinc-900/80 mr-2" : "mr-2"}
+        />
+      )}
+      {children}
+    </Component>
+  );
+};
+
+const Card = ({ title, action, children, className = "" }) => (
+  <div
+    className={`bg-zinc-900/80 backdrop-blur-sm rounded-2xl border border-zinc-800/60 shadow-xl shadow-black/20 ${className}`}
+  >
+    {title && (
+      <div className="px-5 py-4 border-b border-zinc-800/60 flex justify-between items-center">
+        <h3 className="text-sm font-bold text-zinc-200">{title}</h3>
+        {action}
+      </div>
+    )}
+    <div className="p-5 relative h-full">{children}</div>
+  </div>
+);
+
+const Badge = ({ children, variant = "neutral", className = "", ...props }) => {
+  const base =
+    "inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border backdrop-blur-sm transition-all";
+  const variants = {
+    neutral: "bg-zinc-800/50 border-zinc-700/50 text-zinc-400",
+    success: "bg-emerald-500/10 border-emerald-500/20 text-emerald-300",
+    warning: "bg-amber-400/10 border-amber-400/20 text-amber-200",
+    primary: "bg-rose-500/10 border-rose-500/20 text-rose-300",
+    active:
+      "bg-rose-500 text-white border-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.4)]",
+    info: "bg-sky-500/10 border-sky-500/20 text-sky-300",
+  };
+  return (
+    <span className={`${base} ${variants[variant]} ${className}`} {...props}>
+      {children}
+    </span>
+  );
+};
+
+// --- LOGIKA BIZNESOWA ---
+
+const calculateDistanceHaversine = (lat1, lon1, lat2, lon2) => {
+  const R = 6371e3;
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+};
+
+const formatDuration = (ms) => {
+  const seconds = Math.floor((ms / 1000) % 60);
+  const minutes = Math.floor((ms / (1000 * 60)) % 60);
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+
+  const pad = (n) => n.toString().padStart(2, "0");
+  if (hours > 0) return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  return `${pad(minutes)}:${pad(seconds)}`;
+};
+
+const parseGPXRaw = (xmlString) => {
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+  const trkpts = xmlDoc.getElementsByTagName("trkpt");
+
+  const rawPoints = [];
+  for (let i = 0; i < trkpts.length; i++) {
+    const lat = parseFloat(trkpts[i].getAttribute("lat"));
+    const lon = parseFloat(trkpts[i].getAttribute("lon"));
+    const eleEl = trkpts[i].getElementsByTagName("ele")[0];
+    const timeEl = trkpts[i].getElementsByTagName("time")[0];
+
+    const ele = eleEl ? parseFloat(eleEl.textContent) : 0;
+    const time = timeEl ? new Date(timeEl.textContent) : null;
+
+    rawPoints.push({ lat, lon, ele, time });
+  }
+  return rawPoints;
+};
+
+const analyzeTrack = (rawPoints, settings) => {
+  if (!rawPoints || rawPoints.length === 0) return null;
+
+  const points = [];
+  let totalDistance = 0;
+  let maxEle = -Infinity;
+  let minEle = Infinity;
+  let maxSpeed = 0;
+
+  for (let i = 0; i < rawPoints.length; i++) {
+    const p = rawPoints[i];
+
+    if (p.ele > maxEle) maxEle = p.ele;
+    if (p.ele < minEle) minEle = p.ele;
+
+    let distFromLast = 0;
+    let speed = 0;
+
+    if (i > 0) {
+      const prev = rawPoints[i - 1];
+      const dist2D = calculateDistanceHaversine(
+        prev.lat,
+        prev.lon,
+        p.lat,
+        p.lon,
+      );
+
+      if (settings.mode3D) {
+        const eleDiff = p.ele - prev.ele;
+        distFromLast = Math.sqrt(dist2D * dist2D + eleDiff * eleDiff);
+      } else {
+        distFromLast = dist2D;
+      }
+
+      totalDistance += distFromLast;
+
+      const timeDiff = (p.time - prev.time) / 1000;
+      if (timeDiff > 0) {
+        speed = (distFromLast / timeDiff) * 3.6;
+      }
+    }
+
+    points.push({ ...p, cumDist: totalDistance, speed });
+  }
+
+  // Wygładzanie prędkości
+  const windowSize = settings.smoothingWindow || 0;
+
+  if (windowSize > 0) {
+    for (let i = 0; i < points.length; i++) {
+      let sum = 0;
+      let count = 0;
+      for (let j = i - windowSize; j <= i + windowSize; j++) {
+        if (j >= 0 && j < points.length) {
+          sum += points[j].speed;
+          count++;
+        }
+      }
+      points[i].smoothSpeed = sum / count;
+      if (points[i].smoothSpeed > maxSpeed) maxSpeed = points[i].smoothSpeed;
+    }
+  } else {
+    for (let i = 0; i < points.length; i++) {
+      points[i].smoothSpeed = points[i].speed;
+      if (points[i].speed > maxSpeed) maxSpeed = points[i].speed;
+    }
+  }
+
+  // Segmenty
+  const THRESHOLD = 15;
+  const segments = [];
+  let state = "IDLE";
+  let segmentStartIdx = 0;
+  let extremeEle = points[0].ele;
+  let extremeIdx = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i];
+
+    if (state === "IDLE") {
+      if (p.ele < points[segmentStartIdx].ele - THRESHOLD) {
+        state = "DESCENDING";
+        extremeEle = p.ele;
+        extremeIdx = i;
+      } else if (p.ele > points[segmentStartIdx].ele + THRESHOLD) {
+        state = "ASCENDING";
+        extremeEle = p.ele;
+        extremeIdx = i;
+      }
+    } else if (state === "DESCENDING") {
+      if (p.ele < extremeEle) {
+        extremeEle = p.ele;
+        extremeIdx = i;
+      }
+      if (p.ele > extremeEle + THRESHOLD) {
+        segments.push(
+          createSegment(points, segmentStartIdx, extremeIdx, "descent"),
+        );
+        state = "ASCENDING";
+        segmentStartIdx = extremeIdx;
+        extremeEle = p.ele;
+        extremeIdx = i;
+      }
+    } else if (state === "ASCENDING") {
+      if (p.ele > extremeEle) {
+        extremeEle = p.ele;
+        extremeIdx = i;
+      }
+      if (p.ele < extremeEle - THRESHOLD) {
+        segments.push(
+          createSegment(points, segmentStartIdx, extremeIdx, "ascent"),
+        );
+        state = "DESCENDING";
+        segmentStartIdx = extremeIdx;
+        extremeEle = p.ele;
+        extremeIdx = i;
+      }
+    }
+  }
+
+  if (state !== "IDLE" && segmentStartIdx < points.length - 1) {
+    segments.push(
+      createSegment(
+        points,
+        segmentStartIdx,
+        points.length - 1,
+        state === "DESCENDING" ? "descent" : "ascent",
+      ),
+    );
+  }
+
+  // Numerowanie segmentów
+  let descentCounter = 0;
+  let ascentCounter = 0;
+
+  segments.forEach((seg) => {
+    if (seg.type === "descent") {
+      descentCounter++;
+      seg.typeIndex = descentCounter;
+    } else {
+      ascentCounter++;
+      seg.typeIndex = ascentCounter;
+    }
+    seg.globalId = `${seg.type}-${seg.typeIndex}`;
+  });
+
+  const runsCount = descentCounter;
+  const liftsCount = ascentCounter;
+
+  const startTime = points[0]?.time;
+  const endTime = points[points.length - 1]?.time;
+  const durationMs = startTime && endTime ? endTime - startTime : 0;
+
+  const durationHours = durationMs / 1000 / 3600;
+  const avgSpeed = durationHours > 0 ? totalDistance / 1000 / durationHours : 0;
+
+  return {
+    points,
+    segments,
+    summary: {
+      totalDistance: (totalDistance / 1000).toFixed(2),
+      maxEle: Math.round(maxEle),
+      minEle: Math.round(minEle),
+      elevationGain: Math.round(maxEle - minEle),
+      duration: formatDuration(durationMs),
+      avgSpeed: avgSpeed.toFixed(1),
+      maxSpeed: maxSpeed.toFixed(1),
+      pointsCount: points.length,
+      runsCount,
+      liftsCount,
+    },
+  };
+};
+
+const createSegment = (allPoints, startIdx, endIdx, type) => {
+  const segmentPoints = allPoints.slice(startIdx, endIdx + 1);
+  const startP = allPoints[startIdx];
+  const endP = allPoints[endIdx];
+
+  const dist =
+    segmentPoints[segmentPoints.length - 1].cumDist - segmentPoints[0].cumDist;
+  const vert = Math.abs(endP.ele - startP.ele);
+  const timeMs = endP.time - startP.time;
+
+  let maxSegSpeed = 0;
+  segmentPoints.forEach((p) => {
+    if (p.smoothSpeed > maxSegSpeed) maxSegSpeed = p.smoothSpeed;
+  });
+
+  return {
+    type,
+    startIdx,
+    endIdx,
+    startTime: startP.time,
+    endTime: endP.time,
+    duration: formatDuration(timeMs),
+    durationVal: timeMs,
+    distance: (dist / 1000).toFixed(2),
+    distanceVal: dist / 1000,
+    vertical: Math.round(vert),
+    maxSpeed: maxSegSpeed.toFixed(1),
+    maxSpeedVal: maxSegSpeed,
+    avgSpeed:
+      timeMs > 0 ? (dist / 1000 / (timeMs / 1000 / 3600)).toFixed(1) : 0,
+  };
+};
+
+// --- KOMPONENTY WIZUALIZACJI ---
+
+const ElevationChart = ({
+  points,
+  height = 48,
+  showLabels = true,
+  hoverIndex,
+  onHover,
+  trimRange,
+  onTrimChange,
+}) => {
+  if (!points || points.length === 0) return null;
+
+  const containerRef = useRef(null);
+  const isDragging = useRef(null);
+
+  const sampleRate = Math.max(1, Math.ceil(points.length / 500));
+  const data = points.filter((_, i) => i % sampleRate === 0);
+  const width = 100;
+  const h = 40;
+  const minEle = Math.min(...data.map((p) => p.ele));
+  const maxEle = Math.max(...data.map((p) => p.ele));
+  const startDist = data[0].cumDist;
+  const totalDist = data[data.length - 1].cumDist - startDist;
+  const eleRange = maxEle - minEle || 1;
+
+  const svgPoints = data
+    .map((p) => {
+      const x = ((p.cumDist - startDist) / totalDist) * width;
+      const y = h - ((p.ele - minEle) / eleRange) * h;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  const areaPath = `${svgPoints} ${width},${h} 0,${h}`;
+
+  const getIndexFromX = (clientX) => {
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    const targetDist = startDist + ratio * totalDist;
+
+    let bestIdx = 0;
+    let minDiff = Infinity;
+    const step = Math.ceil(points.length / 500) || 1;
+
+    for (let i = 0; i < points.length; i += step) {
+      const diff = Math.abs(points[i].cumDist - targetDist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestIdx = i;
+      }
+    }
+    const startSearch = Math.max(0, bestIdx - step);
+    const endSearch = Math.min(points.length - 1, bestIdx + step);
+    for (let i = startSearch; i <= endSearch; i++) {
+      const diff = Math.abs(points[i].cumDist - targetDist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  };
+
+  const handleMouseDown = (e, type) => {
+    if (!trimRange) return;
+    e.stopPropagation();
+    isDragging.current = type;
+  };
+
+  const handleMouseMove = (e) => {
+    if (isDragging.current && onTrimChange) {
+      const newIdx = getIndexFromX(e.clientX);
+      onHover(newIdx);
+
+      if (isDragging.current === "start") {
+        const safeIdx = Math.min(newIdx, trimRange[1] - 1);
+        onTrimChange([safeIdx, trimRange[1]]);
+      } else {
+        const safeIdx = Math.max(newIdx, trimRange[0] + 1);
+        onTrimChange([trimRange[0], safeIdx]);
+      }
+      return;
+    }
+
+    if (onHover) {
+      onHover(getIndexFromX(e.clientX));
+    }
+  };
+
+  const handleMouseUp = () => {
+    isDragging.current = null;
+  };
+
+  let trimLeftX = 0;
+  let trimRightX = 100;
+  if (trimRange && trimRange[0] !== null && trimRange[1] !== null) {
+    const p1 = points[trimRange[0]];
+    trimLeftX = ((p1.cumDist - startDist) / totalDist) * width;
+
+    const p2 = points[trimRange[1]];
+    trimRightX = ((p2.cumDist - startDist) / totalDist) * width;
+  }
+
+  let cursorX = -1;
+  if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
+    const p = points[hoverIndex];
+    cursorX = ((p.cumDist - startDist) / totalDist) * width;
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className={`w-full h-${height} relative group cursor-crosshair select-none`}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={() => {
+        if (!isDragging.current) onHover && onHover(null);
+        handleMouseUp();
+      }}
+    >
+      <svg
+        viewBox={`0 0 ${width} ${h}`}
+        className="w-full h-full overflow-visible"
+        preserveAspectRatio="none"
+      >
+        <defs>
+          <linearGradient id="eleGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fb7185" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="#fdba74" stopOpacity="0.1" />
+          </linearGradient>
+        </defs>
+        <path
+          d={areaPath}
+          fill="url(#eleGradient)"
+          className="transition-all duration-500"
+        />
+        <polyline
+          points={svgPoints}
+          fill="none"
+          stroke="#fb7185"
+          strokeWidth="0.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+
+        {cursorX >= 0 && cursorX <= width && (
+          <line
+            x1={cursorX}
+            y1="0"
+            x2={cursorX}
+            y2={h}
+            stroke="white"
+            strokeWidth="0.5"
+            strokeDasharray="1,1"
+          />
+        )}
+      </svg>
+
+      {trimRange && (
+        <>
+          <div
+            className="absolute top-0 bottom-0 left-0 bg-black/60 backdrop-blur-[1px] pointer-events-none border-r border-rose-500/50"
+            style={{ width: `${trimLeftX}%` }}
+          ></div>
+          <div
+            className="absolute top-0 bottom-0 right-0 bg-black/60 backdrop-blur-[1px] pointer-events-none border-l border-rose-500/50"
+            style={{ width: `${100 - trimRightX}%` }}
+          ></div>
+
+          <div
+            className="absolute top-0 bottom-0 w-4 -ml-2 cursor-ew-resize z-20 flex flex-col items-center justify-end group/handle"
+            style={{ left: `${trimLeftX}%` }}
+            onMouseDown={(e) => handleMouseDown(e, "start")}
+          >
+            <div className="h-full w-[1px] bg-rose-400 group-hover/handle:bg-rose-200 transition-colors"></div>
+            <div className="w-4 h-6 bg-rose-500 rounded-t-lg flex items-center justify-center shadow-lg shadow-rose-500/50">
+              <GripVertical size={12} className="text-white" />
+            </div>
+          </div>
+
+          <div
+            className="absolute top-0 bottom-0 w-4 -ml-2 cursor-ew-resize z-20 flex flex-col items-center justify-end group/handle"
+            style={{ left: `${trimRightX}%` }}
+            onMouseDown={(e) => handleMouseDown(e, "end")}
+          >
+            <div className="h-full w-[1px] bg-rose-400 group-hover/handle:bg-rose-200 transition-colors"></div>
+            <div className="w-4 h-6 bg-rose-500 rounded-t-lg flex items-center justify-center shadow-lg shadow-rose-500/50">
+              <GripVertical size={12} className="text-white" />
+            </div>
+          </div>
+        </>
+      )}
+
+      {showLabels && (
+        <>
+          <div className="absolute top-0 right-0 text-[10px] text-zinc-500 bg-zinc-900/80 px-1 rounded">
+            {maxEle}m
+          </div>
+          <div className="absolute bottom-0 right-0 text-[10px] text-zinc-500 bg-zinc-900/80 px-1 rounded">
+            {minEle}m
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+const SpeedChart = ({
+  points,
+  height = 48,
+  hoverIndex,
+  onHover,
+  trimRange,
+  settings,
+  onSettingsChange,
+}) => {
+  if (!points || points.length === 0) return null;
+  const sampleRate = Math.max(1, Math.ceil(points.length / 500));
+  const data = points.filter((_, i) => i % sampleRate === 0);
+  const width = 100;
+  const h = 40;
+  const maxSpeed = Math.max(...data.map((p) => p.smoothSpeed || 0));
+  const startDist = data[0].cumDist;
+  const totalDist = data[data.length - 1].cumDist - startDist;
+
+  const svgPoints = data
+    .map((p) => {
+      const x = ((p.cumDist - startDist) / totalDist) * width;
+      const y = h - ((p.smoothSpeed || 0) / (maxSpeed || 1)) * h;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  const areaPath = `${svgPoints} ${width},${h} 0,${h}`;
+
+  let cursorX = -1;
+  if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
+    const p = points[hoverIndex];
+    cursorX = ((p.cumDist - startDist) / totalDist) * width;
+  }
+
+  let trimLeftX = 0;
+  let trimRightX = 100;
+  if (trimRange) {
+    if (trimRange[0] !== null) {
+      const p = points[trimRange[0]];
+      trimLeftX = ((p.cumDist - startDist) / totalDist) * width;
+    }
+    if (trimRange[1] !== null) {
+      const p = points[trimRange[1]];
+      trimRightX = ((p.cumDist - startDist) / totalDist) * width;
+    }
+  }
+
+  const handleMouseMove = (e) => {
+    if (!onHover) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    const targetDist = startDist + ratio * totalDist;
+
+    let bestIdx = 0;
+    let minDiff = Infinity;
+    const step = Math.ceil(points.length / 500) || 1;
+
+    for (let i = 0; i < points.length; i += step) {
+      const diff = Math.abs(points[i].cumDist - targetDist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestIdx = i;
+      }
+    }
+    const startSearch = Math.max(0, bestIdx - step);
+    const endSearch = Math.min(points.length - 1, bestIdx + step);
+    for (let i = startSearch; i <= endSearch; i++) {
+      const diff = Math.abs(points[i].cumDist - targetDist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestIdx = i;
+      }
+    }
+    onHover(bestIdx);
+  };
+
+  return (
+    <div className="relative">
+      <div
+        className={`w-full h-${height} relative group cursor-crosshair`}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => onHover && onHover(null)}
+      >
+        <svg
+          viewBox={`0 0 ${width} ${h}`}
+          className="w-full h-full overflow-visible"
+          preserveAspectRatio="none"
+        >
+          <defs>
+            <linearGradient id="speedGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.4" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.1" />
+            </linearGradient>
+          </defs>
+          <path
+            d={areaPath}
+            fill="url(#speedGradient)"
+            className="transition-all duration-500"
+          />
+          <polyline
+            points={svgPoints}
+            fill="none"
+            stroke="#22d3ee"
+            strokeWidth="0.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+
+          {trimRange && (
+            <>
+              {trimLeftX > 0 && (
+                <rect
+                  x="0"
+                  y="0"
+                  width={trimLeftX}
+                  height={h}
+                  fill="rgba(0,0,0,0.5)"
+                />
+              )}
+              {trimRightX < 100 && (
+                <rect
+                  x={trimRightX}
+                  y="0"
+                  width={100 - trimRightX}
+                  height={h}
+                  fill="rgba(0,0,0,0.5)"
+                />
+              )}
+            </>
+          )}
+
+          {cursorX >= 0 && cursorX <= width && (
+            <line
+              x1={cursorX}
+              y1="0"
+              x2={cursorX}
+              y2={h}
+              stroke="white"
+              strokeWidth="0.5"
+              strokeDasharray="1,1"
+            />
+          )}
+        </svg>
+        <div className="absolute top-0 right-0 text-[10px] text-zinc-500 bg-zinc-900/80 px-1 rounded">
+          {maxSpeed.toFixed(1)} km/h
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const RoutePreview = ({
+  points,
+  mode3D,
+  detailLevel = 5000,
+  hoverIndex,
+  onHover,
+}) => {
+  if (!points || points.length === 0) return null;
+
+  const [rotation, setRotation] = useState({ alpha: 0, beta: 45 });
+  const containerRef = useRef(null);
+  const isDragging = useRef(false);
+  const lastMousePos = useRef({ x: 0, y: 0 });
+
+  const renderData = useMemo(() => {
+    if (!mode3D) {
+      if (points.length > 5000) {
+        const sampleRate = Math.ceil(points.length / 5000);
+        return points.filter((_, i) => i % sampleRate === 0);
+      }
+      return points;
+    } else {
+      const targetPoints = detailLevel;
+      const sampleRate = Math.max(1, Math.ceil(points.length / targetPoints));
+      return points.filter((_, i) => i % sampleRate === 0);
+    }
+  }, [points, mode3D, detailLevel]);
+
+  const normalizedPoints = useMemo(() => {
+    const lats = renderData.map((p) => p.lat);
+    const lons = renderData.map((p) => p.lon);
+    const eles = renderData.map((p) => p.ele);
+
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const minEle = Math.min(...eles);
+    const maxEle = Math.max(...eles);
+
+    const latRange = maxLat - minLat || 0.00001;
+    const lonRange = maxLon - minLon || 0.00001;
+    const eleRange = maxEle - minEle || 1;
+
+    return renderData.map((p, idx) => ({
+      x: (p.lon - minLon) / lonRange - 0.5,
+      z: -((p.lat - minLat) / latRange - 0.5),
+      y: (p.ele - minEle) / eleRange,
+      originalIndex: Math.floor(idx * (points.length / renderData.length)),
+    }));
+  }, [renderData, points.length]);
+
+  const project = useCallback((x, y, z, cosA, sinA, cosB, sinB) => {
+    const ELEVATION_SCALE = 0.4;
+    const x1 = x * cosA - z * sinA;
+    const z1 = x * sinA + z * cosA;
+    const y1 = y * ELEVATION_SCALE;
+
+    const sx = 50 + x1 * 80;
+    const sy = 50 - (y1 * cosB - z1 * sinB) * 80;
+    return { sx, sy };
+  }, []);
+
+  const projectedPoints = useMemo(() => {
+    const { alpha, beta } = rotation;
+    const radAlpha = (alpha * Math.PI) / 180;
+    const radBeta = (beta * Math.PI) / 180;
+    const cosA = Math.cos(radAlpha);
+    const sinA = Math.sin(radAlpha);
+    const cosB = Math.cos(radBeta);
+    const sinB = Math.sin(radBeta);
+
+    if (!mode3D) {
+      return normalizedPoints.map((p) => ({
+        sx: (p.x + 0.5) * 100,
+        sy: 50 + p.z * 100,
+        originalIndex: p.originalIndex,
+      }));
+    } else {
+      return normalizedPoints.map((p) => {
+        const { sx, sy } = project(p.x, p.y, p.z, cosA, sinA, cosB, sinB);
+        return { sx, sy, originalIndex: p.originalIndex };
+      });
+    }
+  }, [normalizedPoints, rotation, mode3D, project]);
+
+  const projectedPath = useMemo(() => {
+    return projectedPoints.map((p) => `${p.sx},${p.sy}`).join(" ");
+  }, [projectedPoints]);
+
+  const gridLines = useMemo(() => {
+    if (!mode3D) return [];
+
+    const lines = [];
+    const step = 0.25;
+    const { alpha, beta } = rotation;
+    const radAlpha = (alpha * Math.PI) / 180;
+    const radBeta = (beta * Math.PI) / 180;
+    const cosA = Math.cos(radAlpha);
+    const sinA = Math.sin(radAlpha);
+    const cosB = Math.cos(radBeta);
+    const sinB = Math.sin(radBeta);
+
+    for (let x = -0.5; x <= 0.501; x += step) {
+      const start = project(x, 0, -0.5, cosA, sinA, cosB, sinB);
+      const end = project(x, 0, 0.5, cosA, sinA, cosB, sinB);
+      lines.push({ x1: start.sx, y1: start.sy, x2: end.sx, y2: end.sy });
+    }
+    for (let z = -0.5; z <= 0.501; z += step) {
+      const start = project(-0.5, 0, z, cosA, sinA, cosB, sinB);
+      const end = project(0.5, 0, z, cosA, sinA, cosB, sinB);
+      lines.push({ x1: start.sx, y1: start.sy, x2: end.sx, y2: end.sy });
+    }
+    return lines;
+  }, [rotation, mode3D, project]);
+
+  const northMarker = useMemo(() => {
+    if (!mode3D) return null;
+    const { alpha, beta } = rotation;
+    const radAlpha = (alpha * Math.PI) / 180;
+    const radBeta = (beta * Math.PI) / 180;
+    const cosA = Math.cos(radAlpha);
+    const sinA = Math.sin(radAlpha);
+    const cosB = Math.cos(radBeta);
+    const sinB = Math.sin(radBeta);
+
+    return project(0, 0, -0.55, cosA, sinA, cosB, sinB);
+  }, [rotation, mode3D, project]);
+
+  let cursorPoint = null;
+  if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < points.length) {
+    let bestP = null;
+    let minIdxDiff = Infinity;
+    for (const p of projectedPoints) {
+      const diff = Math.abs(p.originalIndex - hoverIndex);
+      if (diff < minIdxDiff) {
+        minIdxDiff = diff;
+        bestP = p;
+      }
+    }
+    cursorPoint = bestP;
+  }
+
+  const handleMouseDown = (e) => {
+    if (!mode3D) return;
+    isDragging.current = true;
+    lastMousePos.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleMouseMove = (e) => {
+    if (isDragging.current && mode3D) {
+      const deltaX = e.clientX - lastMousePos.current.x;
+      const deltaY = e.clientY - lastMousePos.current.y;
+      lastMousePos.current = { x: e.clientX, y: e.clientY };
+
+      requestAnimationFrame(() => {
+        setRotation((prev) => ({
+          alpha: (prev.alpha - deltaX * 0.5) % 360,
+          beta: Math.max(10, Math.min(90, prev.beta + deltaY * 0.5)),
+        }));
+      });
+      return;
+    }
+
+    if (onHover && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const mouseX = ((e.clientX - rect.left) / rect.width) * 100;
+      const mouseY = ((e.clientY - rect.top) / rect.height) * 100;
+
+      let bestDist = Infinity;
+      let bestOriginalIndex = -1;
+
+      for (const p of projectedPoints) {
+        const dx = p.sx - mouseX;
+        const dy = p.sy - mouseY;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestOriginalIndex = p.originalIndex;
+        }
+      }
+
+      if (bestDist < 100) {
+        onHover(bestOriginalIndex);
+      }
+    }
+  };
+
+  const handleMouseUp = () => {
+    isDragging.current = false;
+  };
+
+  const startPoint = projectedPath.split(" ")[0] || "0,0";
+  const endPoint = projectedPath.split(" ").slice(-1)[0] || "0,0";
+
+  const floorPoints = useMemo(() => {
+    if (!mode3D) return "";
+    const corners = [
+      { x: -0.5, z: -0.5 },
+      { x: 0.5, z: -0.5 },
+      { x: 0.5, z: 0.5 },
+      { x: -0.5, z: 0.5 },
+    ];
+    const { alpha, beta } = rotation;
+    const radAlpha = (alpha * Math.PI) / 180;
+    const radBeta = (beta * Math.PI) / 180;
+    const cosA = Math.cos(radAlpha);
+    const sinA = Math.sin(radAlpha);
+    const cosB = Math.cos(radBeta);
+    const sinB = Math.sin(radBeta);
+
+    return corners
+      .map((c) => {
+        const p = project(c.x, 0, c.z, cosA, sinA, cosB, sinB);
+        return `${p.sx},${p.sy}`;
+      })
+      .join(" ");
+  }, [rotation, mode3D, project]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`w-full h-64 flex items-center justify-center p-4 rounded-xl border bg-zinc-950/30 border-zinc-800/30 overflow-hidden relative select-none ${mode3D ? "cursor-move" : "cursor-crosshair"}`}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={() => {
+        handleMouseUp();
+        if (onHover) onHover(null);
+      }}
+    >
+      <svg
+        viewBox="0 0 100 100"
+        className="w-full h-full drop-shadow-[0_0_8px_rgba(251,113,133,0.3)] overflow-visible"
+      >
+        {/* 3D REFERENCE PLANE & GRID */}
+        {mode3D && (
+          <>
+            <polygon
+              points={floorPoints}
+              fill="rgba(255,255,255,0.03)"
+              stroke="none"
+            />
+            {gridLines.map((line, i) => (
+              <line
+                key={i}
+                x1={line.x1}
+                y1={line.y1}
+                x2={line.x2}
+                y2={line.y2}
+                stroke="rgba(255,255,255,0.1)"
+                strokeWidth="0.5"
+              />
+            ))}
+            {northMarker && (
+              <text
+                x={northMarker.sx}
+                y={northMarker.sy}
+                textAnchor="middle"
+                fontSize="6"
+                fill="#10b981"
+                fontWeight="bold"
+              >
+                N
+              </text>
+            )}
+          </>
+        )}
+
+        <polyline
+          points={projectedPath}
+          fill="none"
+          stroke="url(#routeGradient)"
+          strokeWidth={mode3D ? 1.5 : 1}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        <defs>
+          <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#fdba74" />
+            <stop offset="100%" stopColor="#fb7185" />
+          </linearGradient>
+        </defs>
+        <circle
+          cx={startPoint.split(",")[0]}
+          cy={startPoint.split(",")[1]}
+          r={2}
+          fill="#fdba74"
+        />
+        <circle
+          cx={endPoint.split(",")[0]}
+          cy={endPoint.split(",")[1]}
+          r={2}
+          fill="#fb7185"
+        />
+
+        {cursorPoint && (
+          <circle
+            cx={cursorPoint.sx}
+            cy={cursorPoint.sy}
+            r={4}
+            fill="white"
+            stroke="#fb7185"
+            strokeWidth="1"
+            className="animate-pulse"
+          />
+        )}
+      </svg>
+
+      {mode3D && (
+        <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-zinc-900/80 px-2 py-1 rounded-lg border border-zinc-700/50 pointer-events-none">
+          <Rotate3d size={12} className="text-rose-400" />
+          <span className="text-[10px] text-zinc-300">Obracaj / Pochylaj</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- GŁÓWNA APLIKACJA ---
+
+const SkiTrackerApp = () => {
+  const [dragActive, setDragActive] = useState(false);
+  const [file, setFile] = useState(null);
+  const [rawPoints, setRawPoints] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [selectedSegmentIdx, setSelectedSegmentIdx] = useState(null);
+  const [hoverIndex, setHoverIndex] = useState(null);
+
+  // Ustawienia
+  const [settings, setSettings] = useState({
+    mode3D: true,
+    smoothingWindow: 1,
+    visualMode3D: false,
+    detailLevel: 2000,
+  });
+
+  // Filtry
+  const [filterType, setFilterType] = useState("descent");
+  const [sortType, setSortType] = useState("time");
+
+  // Przycinanie
+  const [trimMode, setTrimMode] = useState(false);
+  const [trimRange, setTrimRange] = useState(null);
+
+  // Playback
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const lastFrameRef = useRef(0);
+  const playbackTimeRef = useRef(0);
+
+  const trackData = useMemo(() => {
+    if (!rawPoints) return null;
+    return analyzeTrack(rawPoints, settings);
+  }, [rawPoints, settings.mode3D, settings.smoothingWindow]);
+
+  const viewData = useMemo(() => {
+    if (!trackData) return null;
+    if (selectedSegmentIdx === null) return trackData;
+
+    const segment = trackData.segments[selectedSegmentIdx];
+    const segmentPoints = trackData.points.slice(
+      segment.startIdx,
+      segment.endIdx + 1,
+    );
+
+    return {
+      points: segmentPoints,
+      summary: {
+        totalDistance: segment.distance,
+        duration: segment.duration,
+        avgSpeed: segment.avgSpeed,
+        maxSpeed: segment.maxSpeed,
+        elevationGain: segment.vertical,
+        maxEle: Math.max(...segmentPoints.map((p) => p.ele)),
+        minEle: Math.min(...segmentPoints.map((p) => p.ele)),
+      },
+      isSegment: true,
+      segmentInfo: segment,
+      segmentIndex: selectedSegmentIdx,
+      segmentStartDist: segmentPoints[0].cumDist,
+    };
+  }, [trackData, selectedSegmentIdx]);
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") setDragActive(true);
+    else if (e.type === "dragleave") setDragActive(false);
+  };
+
+  const processFile = (selectedFile) => {
+    if (!selectedFile) return;
+    if (!selectedFile.name.toLowerCase().endsWith(".gpx")) {
+      setError("Proszę wybrać plik z rozszerzeniem .gpx");
+      return;
+    }
+    setFile(selectedFile);
+    setLoading(true);
+    setError(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const raw = parseGPXRaw(e.target.result);
+        if (raw.length === 0) throw new Error("Nie znaleziono punktów trasy.");
+        setRawPoints(raw);
+        setSelectedSegmentIdx(null);
+      } catch (err) {
+        console.error(err);
+        setError("Błąd parsowania pliku. Upewnij się, że to poprawny GPX.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    reader.readAsText(selectedFile);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0])
+      processFile(e.dataTransfer.files[0]);
+  };
+  const handleChange = (e) => {
+    e.preventDefault();
+    if (e.target.files && e.target.files[0]) processFile(e.target.files[0]);
+  };
+  const resetApp = () => {
+    setFile(null);
+    setRawPoints(null);
+    setError(null);
+    setSelectedSegmentIdx(null);
+    setHoverIndex(null);
+    setTrimMode(false);
+    setTrimRange(null);
+    setIsPlaying(false);
+  };
+
+  const initTrimMode = () => {
+    setTrimMode(true);
+    setTrimRange([0, rawPoints.length - 1]);
+  };
+
+  const applyTrim = () => {
+    if (!rawPoints || !trimRange) return;
+    const start = Math.min(trimRange[0], trimRange[1]);
+    const end = Math.max(trimRange[0], trimRange[1]);
+    const newRaw = rawPoints.slice(start, end + 1);
+    setRawPoints(newRaw);
+    setTrimMode(false);
+    setTrimRange(null);
+    setSelectedSegmentIdx(null);
+  };
+
+  const handleHover = (idx) => {
+    if (isPlaying && idx !== null) {
+      setIsPlaying(false);
+    }
+    setHoverIndex(idx);
+  };
+
+  useEffect(() => {
+    if (!isPlaying || !viewData?.points?.length) {
+      lastFrameRef.current = 0;
+      return;
+    }
+
+    if (hoverIndex !== null) {
+      const start = viewData.points[0].time.getTime();
+      const current = viewData.points[hoverIndex].time.getTime();
+      playbackTimeRef.current = current - start;
+
+      if (hoverIndex >= viewData.points.length - 1) {
+        playbackTimeRef.current = 0;
+      }
+    } else {
+      playbackTimeRef.current = 0;
+    }
+
+    let animId;
+    const animate = (time) => {
+      if (!lastFrameRef.current) lastFrameRef.current = time;
+      const delta = time - lastFrameRef.current;
+      lastFrameRef.current = time;
+
+      playbackTimeRef.current += delta * playbackSpeed;
+
+      const startT = viewData.points[0].time.getTime();
+      const targetT = startT + playbackTimeRef.current;
+      const endT = viewData.points[viewData.points.length - 1].time.getTime();
+
+      if (targetT >= endT) {
+        setHoverIndex(viewData.points.length - 1);
+        setIsPlaying(false);
+        return;
+      }
+
+      const nextIdx = viewData.points.findIndex(
+        (p) => p.time.getTime() >= targetT,
+      );
+      if (nextIdx !== -1) {
+        setHoverIndex(nextIdx);
+      }
+
+      animId = requestAnimationFrame(animate);
+    };
+
+    animId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animId);
+  }, [isPlaying, playbackSpeed, viewData]);
+
+  const togglePlay = () => setIsPlaying((p) => !p);
+  const toggleSpeed = () => {
+    const speeds = [1, 2, 5, 10, 20, 50];
+    const nextIdx = (speeds.indexOf(playbackSpeed) + 1) % speeds.length;
+    setPlaybackSpeed(speeds[nextIdx]);
+  };
+
+  const filteredSegments = useMemo(() => {
+    if (!trackData) return [];
+
+    let list = trackData.segments.map((seg, idx) => ({
+      ...seg,
+      originalIdx: idx,
+    }));
+
+    if (filterType !== "all") {
+      list = list.filter((s) => s.type === filterType);
+    }
+
+    if (sortType === "speed") {
+      list.sort((a, b) => b.maxSpeedVal - a.maxSpeedVal);
+    } else if (sortType === "distance") {
+      list.sort((a, b) => b.distanceVal - a.distanceVal);
+    } else if (sortType === "duration") {
+      list.sort((a, b) => b.durationVal - a.durationVal);
+    } else {
+      list.sort((a, b) => a.startTime - b.startTime);
+    }
+
+    return list;
+  }, [trackData, filterType, sortType]);
+
+  return (
+    <div className="min-h-screen font-sans bg-zinc-950 text-zinc-100 selection:bg-rose-500/30 pb-12">
+      <nav className="h-16 border-b border-zinc-800/60 bg-zinc-950/70 backdrop-blur-xl sticky top-0 z-50 px-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-300 to-rose-400 flex items-center justify-center text-zinc-900 shadow-lg shadow-rose-500/20">
+            <Mountain size={20} fill="currentColor" className="text-zinc-900" />
+          </div>
+          <span className="font-bold text-zinc-200 tracking-tight text-lg">
+            Ski<span className="text-rose-400">Tracker</span> GPX
+          </span>
+        </div>
+        {trackData && (
+          <Button variant="secondary" size="xs" onClick={resetApp} icon={X}>
+            Zamknij plik
+          </Button>
+        )}
+      </nav>
+
+      <main className="max-w-5xl mx-auto p-6 space-y-8">
+        {!trackData && (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] animate-in fade-in duration-700">
+            <div className="text-center mb-8 space-y-2">
+              <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-orange-200 to-rose-300">
+                Analizuj swoje zjazdy
+              </h1>
+              <p className="text-zinc-400">
+                Przeciągnij plik GPX ze SkiTrackera lub innego urządzenia
+              </p>
+            </div>
+            <div
+              className={`relative w-full max-w-xl h-64 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all duration-300 ${dragActive ? "border-rose-400 bg-rose-500/5 scale-105 shadow-2xl shadow-rose-500/20" : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"}`}
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+            >
+              <input
+                type="file"
+                id="file-upload"
+                className="hidden"
+                accept=".gpx"
+                onChange={handleChange}
+              />
+              <div className="flex flex-col items-center pointer-events-none">
+                <div
+                  className={`w-16 h-16 rounded-2xl mb-4 flex items-center justify-center transition-all duration-500 ${loading ? "animate-pulse bg-emerald-500/20" : "bg-zinc-800"}`}
+                >
+                  {loading ? (
+                    <Activity className="text-emerald-400" />
+                  ) : (
+                    <UploadCloud className="text-zinc-400" size={32} />
+                  )}
+                </div>
+                <p className="text-zinc-300 font-bold text-lg mb-1">
+                  {loading ? "Przetwarzanie..." : "Upuść plik GPX tutaj"}
+                </p>
+                <p className="text-zinc-500 text-sm mb-6">
+                  lub kliknij przycisk poniżej
+                </p>
+              </div>
+              <label htmlFor="file-upload" className="cursor-pointer">
+                <Button
+                  variant="primary"
+                  as="span"
+                  className="pointer-events-auto"
+                >
+                  Wybierz plik
+                </Button>
+              </label>
+            </div>
+            {error && (
+              <div className="mt-6 p-4 bg-rose-950/30 border border-rose-900/50 rounded-xl text-rose-300 flex items-center gap-3 animate-in slide-in-from-bottom-2">
+                <X size={18} />
+                <span className="text-sm font-medium">{error}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {viewData && (
+          <div className="space-y-6 animate-in slide-in-from-bottom-5 duration-500">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-4">
+                {viewData.isSegment ? (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      icon={ArrowLeft}
+                      onClick={() => setSelectedSegmentIdx(null)}
+                    >
+                      Wróć
+                    </Button>
+                    <div>
+                      <h2 className="text-2xl font-bold text-zinc-100 flex items-center gap-2">
+                        {viewData.segmentInfo.type === "descent"
+                          ? "Szczegóły Zjazdu"
+                          : "Szczegóły Wjazdu"}{" "}
+                        #{viewData.segmentInfo.typeIndex}
+                      </h2>
+                      <div className="text-xs font-mono text-zinc-500 mt-1 flex items-center gap-2">
+                        <span>
+                          {viewData.segmentInfo.startTime.toLocaleTimeString()}{" "}
+                          - {viewData.segmentInfo.endTime.toLocaleTimeString()}
+                        </span>
+                        <span className="w-1 h-1 rounded-full bg-zinc-700"></span>
+                        <span>{viewData.points.length} pkt GPX</span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-2xl font-bold text-zinc-100 flex items-center gap-2">
+                      <FileCode className="text-rose-400" size={24} />
+                      {file.name}
+                    </h2>
+                    {!trimMode && (
+                      <div className="flex items-center gap-3 mt-1.5 text-xs font-mono text-zinc-500">
+                        <span>{trackData.summary.pointsCount} punktów</span>
+                        <span className="w-1 h-1 rounded-full bg-zinc-700"></span>
+                        <span>Zjazdy: {trackData.summary.runsCount}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {!viewData.isSegment && (
+                <div className="flex gap-2">
+                  {trimMode ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setTrimMode(false);
+                          setTrimRange(null);
+                        }}
+                      >
+                        Anuluj
+                      </Button>
+                      <Button variant="primary" icon={Save} onClick={applyTrim}>
+                        Zastosuj
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      icon={Scissors}
+                      onClick={initTrimMode}
+                    >
+                      Przytnij GPX
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {trimMode && trimRange && (
+              <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl text-center animate-in fade-in">
+                <p className="text-sm text-rose-200 mb-2 font-bold">
+                  Tryb Edycji: Przesuwaj suwaki na wykresie wysokości, aby
+                  przyciąć trasę.
+                </p>
+                <div className="flex justify-center gap-8 font-mono text-xs text-rose-300">
+                  <span>
+                    Start:{" "}
+                    {viewData.points[trimRange[0]].time.toLocaleTimeString()}
+                  </span>
+                  <span>
+                    Koniec:{" "}
+                    {viewData.points[trimRange[1]].time.toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <Card className="hover:border-rose-500/30 transition-colors">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="p-2 rounded-lg bg-orange-500/10 text-orange-300">
+                    <Navigation size={20} />
+                  </div>
+
+                  <div className="flex items-center gap-1 bg-zinc-950/50 rounded-lg p-0.5 border border-zinc-800">
+                    <button
+                      onClick={() =>
+                        setSettings((s) => ({ ...s, mode3D: false }))
+                      }
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all ${!settings.mode3D ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                    >
+                      2D
+                    </button>
+                    <button
+                      onClick={() =>
+                        setSettings((s) => ({ ...s, mode3D: true }))
+                      }
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all ${settings.mode3D ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                    >
+                      3D
+                    </button>
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-zinc-100 tracking-tight">
+                  {viewData.summary.totalDistance}{" "}
+                  <span className="text-base font-normal text-zinc-500">
+                    km
+                  </span>
+                </div>
+                <div className="text-xs text-zinc-500 mt-1 uppercase tracking-wider font-bold">
+                  Dystans
+                </div>
+              </Card>
+
+              <Card className="hover:border-rose-500/30 transition-colors">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="p-2 rounded-lg bg-rose-500/10 text-rose-300">
+                    <Clock size={20} />
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={toggleSpeed}
+                      className="px-2 py-1 rounded-lg bg-zinc-800/50 border border-zinc-700/50 text-xs font-mono text-zinc-300 hover:bg-zinc-700 transition-colors min-w-[36px]"
+                      title="Prędkość odtwarzania"
+                    >
+                      x{playbackSpeed}
+                    </button>
+                    <button
+                      onClick={togglePlay}
+                      className={`p-1.5 rounded-lg border transition-all ${
+                        isPlaying
+                          ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
+                          : "bg-zinc-800/50 border-zinc-700/50 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
+                      }`}
+                    >
+                      {isPlaying ? (
+                        <Pause size={14} fill="currentColor" />
+                      ) : (
+                        <Play size={14} fill="currentColor" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-zinc-100 tracking-tight">
+                  {viewData.summary.duration}
+                </div>
+                <div className="text-xs text-zinc-500 mt-1 uppercase tracking-wider font-bold">
+                  Czas trwania
+                </div>
+              </Card>
+
+              <Card className="hover:border-rose-500/30 transition-colors">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-300">
+                    <Zap size={20} />
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <Badge variant="primary">
+                      Max {viewData.summary.maxSpeed}
+                    </Badge>
+                    <div
+                      className="flex items-center gap-1.5"
+                      title="Wygładzanie GPS"
+                    >
+                      <Sliders size={10} className="text-zinc-600" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="10"
+                        step="1"
+                        value={settings.smoothingWindow}
+                        onChange={(e) =>
+                          setSettings((s) => ({
+                            ...s,
+                            smoothingWindow: parseInt(e.target.value),
+                          }))
+                        }
+                        className="h-1 w-12 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                      />
+                      <span className="text-[9px] font-mono text-zinc-500 w-3 text-center">
+                        {settings.smoothingWindow}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="text-3xl font-bold text-zinc-100 tracking-tight">
+                  {viewData.summary.avgSpeed}{" "}
+                  <span className="text-base font-normal text-zinc-500">
+                    km/h
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-end mt-1">
+                  <div className="text-xs text-zinc-500 uppercase tracking-wider font-bold">
+                    Średnia Prędkość
+                  </div>
+                </div>
+              </Card>
+              <Card className="hover:border-rose-500/30 transition-colors">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="p-2 rounded-lg bg-purple-500/10 text-purple-300">
+                    <Mountain size={20} />
+                  </div>
+                  <Badge variant="neutral">
+                    Max {viewData.summary.maxEle}m
+                  </Badge>
+                </div>
+                <div className="text-3xl font-bold text-zinc-100 tracking-tight">
+                  {viewData.summary.elevationGain}{" "}
+                  <span className="text-base font-normal text-zinc-500">m</span>
+                </div>
+                <div className="text-xs text-zinc-500 mt-1 uppercase tracking-wider font-bold">
+                  Przewyższenie
+                </div>
+              </Card>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 relative">
+              <div className="lg:col-span-2 space-y-6">
+                <Card title="Profil Wysokościowy">
+                  <div className="mt-4">
+                    <ElevationChart
+                      points={viewData.points}
+                      height={64}
+                      hoverIndex={hoverIndex}
+                      onHover={handleHover}
+                      trimRange={trimMode ? trimRange : null}
+                      onTrimChange={setTrimRange}
+                    />
+                  </div>
+                </Card>
+
+                {viewData.isSegment && (
+                  <Card
+                    title="Profil Prędkości"
+                    action={
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase flex items-center gap-1">
+                          <Sliders size={10} /> Wygładzanie
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="10"
+                          step="1"
+                          value={settings.smoothingWindow}
+                          onChange={(e) =>
+                            setSettings((s) => ({
+                              ...s,
+                              smoothingWindow: parseInt(e.target.value),
+                            }))
+                          }
+                          className="h-1 w-16 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                        />
+                        <span className="text-[10px] font-mono text-zinc-400 w-4 text-center">
+                          {settings.smoothingWindow}
+                        </span>
+                      </div>
+                    }
+                  >
+                    <div className="mt-4">
+                      <SpeedChart
+                        points={viewData.points}
+                        height={48}
+                        hoverIndex={hoverIndex}
+                        onHover={handleHover}
+                        trimRange={trimMode ? trimRange : null}
+                      />
+                      <div className="text-xs text-zinc-500 mt-2 text-center">
+                        Prędkość (km/h) w funkcji dystansu
+                      </div>
+                    </div>
+                  </Card>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-6">
+                <Card
+                  title={viewData.isSegment ? "Ślad Segmentu" : "Kształt Trasy"}
+                  action={
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          setSettings((s) => ({
+                            ...s,
+                            visualMode3D: !s.visualMode3D,
+                          }))
+                        }
+                        className="focus:outline-none"
+                      >
+                        <Badge
+                          variant={
+                            settings.visualMode3D ? "primary" : "neutral"
+                          }
+                          className="cursor-pointer hover:opacity-80 transition-opacity"
+                        >
+                          {settings.visualMode3D ? "3D" : "2D"}
+                        </Badge>
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="flex flex-col items-center justify-center gap-4">
+                    <RoutePreview
+                      points={viewData.points}
+                      mode3D={settings.visualMode3D}
+                      detailLevel={settings.detailLevel}
+                      hoverIndex={hoverIndex}
+                      onHover={handleHover}
+                    />
+
+                    {settings.visualMode3D && (
+                      <div className="w-full pt-2 border-t border-zinc-800/50 animate-in fade-in slide-in-from-top-1">
+                        <div className="flex items-center justify-between text-[10px] text-zinc-500 mb-2">
+                          <span className="flex items-center gap-1">
+                            <Cpu size={10} /> Detale 3D (Max pkt)
+                          </span>
+                          <span className="font-mono">
+                            {settings.detailLevel} pts
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="2000"
+                          max="20000"
+                          step="1000"
+                          value={settings.detailLevel}
+                          onChange={(e) =>
+                            setSettings((s) => ({
+                              ...s,
+                              detailLevel: parseInt(e.target.value),
+                            }))
+                          }
+                          className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-4 text-[10px] text-zinc-500">
+                      {settings.visualMode3D && (
+                        <span className="flex items-center gap-1">
+                          <Box size={10} /> Widok izometryczny
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+
+                <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl p-5 shadow-lg backdrop-blur-md">
+                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <Crosshair size={14} /> Dane Punktu
+                  </h3>
+
+                  {hoverIndex !== null ? (
+                    <div className="space-y-4">
+                      {!viewData.isSegment &&
+                        (() => {
+                          const activeSeg = trackData.segments.find(
+                            (s) =>
+                              hoverIndex >= s.startIdx &&
+                              hoverIndex <= s.endIdx,
+                          );
+                          if (activeSeg) {
+                            return (
+                              <div className="pb-3 mb-1 border-b border-zinc-700/50 flex items-center justify-between">
+                                <span className="text-xs text-zinc-500">
+                                  Aktywność:
+                                </span>
+                                <span
+                                  className={`font-bold ${activeSeg.type === "descent" ? "text-rose-400" : "text-emerald-400"}`}
+                                >
+                                  {activeSeg.type === "descent"
+                                    ? "Zjazd"
+                                    : "Wjazd"}{" "}
+                                  #{activeSeg.typeIndex}
+                                </span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="pb-3 mb-1 border-b border-zinc-700/50 flex items-center justify-between">
+                              <span className="text-xs text-zinc-500">
+                                Status:
+                              </span>
+                              <span className="text-zinc-400">
+                                Oczekiwanie / Transfer
+                              </span>
+                            </div>
+                          );
+                        })()}
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <div className="text-[10px] text-zinc-500">Czas</div>
+                          <div className="text-lg font-mono text-zinc-200">
+                            {viewData.points[
+                              hoverIndex
+                            ].time.toLocaleTimeString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-500">
+                            Dystans
+                          </div>
+                          <div className="text-lg font-mono text-zinc-200">
+                            {viewData.isSegment
+                              ? (
+                                  (viewData.points[hoverIndex].cumDist -
+                                    viewData.segmentStartDist) /
+                                  1000
+                                ).toFixed(2)
+                              : (
+                                  viewData.points[hoverIndex].cumDist / 1000
+                                ).toFixed(2)}{" "}
+                            <span className="text-sm text-zinc-500">km</span>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-500">
+                            Wysokość
+                          </div>
+                          <div className="text-lg font-mono text-orange-300">
+                            {Math.round(viewData.points[hoverIndex].ele)}{" "}
+                            <span className="text-sm text-orange-300/50">
+                              m
+                            </span>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-zinc-500">
+                            Prędkość
+                          </div>
+                          <div className="text-lg font-mono text-emerald-300">
+                            {(
+                              viewData.points[hoverIndex].smoothSpeed ||
+                              viewData.points[hoverIndex].speed ||
+                              0
+                            ).toFixed(1)}{" "}
+                            <span className="text-sm text-emerald-300/50">
+                              km/h
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-32 flex flex-col items-center justify-center text-zinc-600 text-sm">
+                      <MousePointerClick
+                        size={24}
+                        className="mb-2 opacity-50"
+                      />
+                      Wskaż punkt na wykresie lub mapie
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {!viewData.isSegment && !trimMode && (
+              <div className="space-y-4 animate-in fade-in">
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-800/50">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-bold text-zinc-500 uppercase flex items-center gap-1">
+                      <Filter size={12} /> Pokaż
+                    </span>
+                    <div className="flex bg-zinc-950 rounded-lg p-1 border border-zinc-800">
+                      <button
+                        onClick={() => setFilterType("all")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${filterType === "all" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Wszystkie
+                      </button>
+                      <button
+                        onClick={() => setFilterType("descent")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${filterType === "descent" ? "bg-rose-500/20 text-rose-300" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Zjazdy
+                      </button>
+                      <button
+                        onClick={() => setFilterType("ascent")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${filterType === "ascent" ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Wjazdy
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-bold text-zinc-500 uppercase flex items-center gap-1">
+                      <ArrowUpDown size={12} /> Sortuj
+                    </span>
+                    <div className="flex flex-wrap bg-zinc-950 rounded-lg p-1 border border-zinc-800">
+                      <button
+                        onClick={() => setSortType("time")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "time" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Chronologicznie
+                      </button>
+                      <button
+                        onClick={() => setSortType("duration")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "duration" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Czas trwania
+                      </button>
+                      <button
+                        onClick={() => setSortType("distance")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "distance" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        Dystans
+                      </button>
+                      <button
+                        onClick={() => setSortType("speed")}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${sortType === "speed" ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+                      >
+                        V-Max
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <h3 className="text-xl font-bold text-zinc-200">
+                  Wykryte Aktywności ({filteredSegments.length})
+                </h3>
+
+                <div className="grid gap-3">
+                  {filteredSegments.map((seg) => (
+                    <div
+                      key={seg.originalIdx}
+                      onClick={() => setSelectedSegmentIdx(seg.originalIdx)}
+                      className="cursor-pointer flex items-center justify-between p-4 bg-zinc-900/40 border border-zinc-800/50 rounded-xl hover:bg-zinc-800 hover:border-zinc-600 transition-all group active:scale-[0.99]"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div
+                          className={`w-10 h-10 rounded-xl flex items-center justify-center border ${
+                            seg.type === "descent"
+                              ? "bg-rose-500/10 border-rose-500/20 text-rose-400"
+                              : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                          }`}
+                        >
+                          {seg.type === "descent" ? (
+                            <ArrowDownRight size={20} />
+                          ) : (
+                            <ArrowUpRight size={20} />
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-bold text-zinc-200 flex items-center gap-2 group-hover:text-rose-300 transition-colors">
+                            {seg.type === "descent" ? "Zjazd" : "Wjazd/Wyciąg"}{" "}
+                            #{seg.typeIndex}
+                            {seg.type === "descent" && (
+                              <Badge variant="primary">
+                                Max {seg.maxSpeed} km/h
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="text-xs text-zinc-500 font-mono mt-0.5">
+                            {seg.startTime.toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-6 md:gap-8">
+                        <div className="text-right">
+                          <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">
+                            Czas
+                          </div>
+                          <div className="font-mono text-zinc-300">
+                            {seg.duration}
+                          </div>
+                        </div>
+                        <div className="text-right w-20 hidden sm:block">
+                          <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">
+                            Dystans
+                          </div>
+                          <div className="font-mono text-zinc-300">
+                            {seg.distance} km
+                          </div>
+                        </div>
+                        <div className="text-right w-20">
+                          <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">
+                            Pion
+                          </div>
+                          <div
+                            className={`font-mono font-bold ${seg.type === "descent" ? "text-rose-400" : "text-emerald-400"}`}
+                          >
+                            {seg.vertical}m
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {filteredSegments.length === 0 && (
+                    <div className="text-center py-8 text-zinc-500">
+                      Brak aktywności spełniających kryteria.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default SkiTrackerApp;
