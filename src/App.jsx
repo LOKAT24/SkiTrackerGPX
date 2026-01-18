@@ -1434,7 +1434,7 @@ const TelemetryView = ({
   onSeek, // New prop
 }) => {
   // State for Virtual Studio
-  const [resolution, setResolution] = useState(RESOLUTIONS[1]); // Default 1080p
+  const [resolution, setResolution] = useState(RESOLUTIONS[0]); // Default 720p
   const [containerScale, setContainerScale] = useState(1);
   const containerRef = useRef(null);
   const recordingCanvasRef = useRef(null); // Reference for native recording
@@ -1457,8 +1457,8 @@ const TelemetryView = ({
   const [bgOpacity, setBgOpacity] = useState(0.3);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
-  const [autoScaleFactor, setAutoScaleFactor] = useState(0.25); // 1/4 by default
-  const [layoutMargin, setLayoutMargin] = useState(50);
+  const [autoScaleFactor, setAutoScaleFactor] = useState(0.33); // 1/3 by default
+  const [layoutMargin, setLayoutMargin] = useState(20);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
 
@@ -2209,9 +2209,21 @@ const TelemetryView = ({
   const toggleWidget = (type) => {
     setWidgets((prev) => {
       const exists = prev.find((w) => w.type === type);
+
+      // If turning ON a map type, ensure the OTHER map type is removed
+      let nextWidgets = prev;
+      if (!exists) {
+        if (type === "map") {
+          nextWidgets = prev.filter((w) => w.type !== "map-speed");
+        } else if (type === "map-speed") {
+          nextWidgets = prev.filter((w) => w.type !== "map");
+        }
+      }
+
       if (exists) {
         return prev.filter((w) => w.type !== type);
       }
+
       // Add new
       const id = type + Math.random().toString(36).substr(2, 5);
       const defaults = {
@@ -2235,11 +2247,11 @@ const TelemetryView = ({
           scale: 1.0,
         },
       };
-      return [...prev, { id, type, ...defaults[type] }];
+      return [...nextWidgets, { id, type, ...defaults[type] }];
     });
   };
 
-  const handleAutoLayout = () => {
+  const handleAutoLayout = useCallback(() => {
     // scale based on window height
     const targetH = resolution.h * autoScaleFactor;
 
@@ -2251,6 +2263,7 @@ const TelemetryView = ({
       const typesToReset = [
         "speedometer",
         "map",
+        "map-speed",
         "elevation",
         "elevation-profile",
       ];
@@ -2276,18 +2289,20 @@ const TelemetryView = ({
         });
       }
 
-      // Re-add/Update Map
-      // Layout: Top-Right
-      if (prev.find((w) => w.type === "map")) {
+      // Re-add/Update Map (Common logic for map types)
+      const mapWidget = prev.find(
+        (w) => w.type === "map" || w.type === "map-speed",
+      );
+      if (mapWidget) {
         const mapScale = targetH / 400;
         const mapX = resolution.w - layoutMargin - (tilePad + 600) * mapScale;
         const mapY = layoutMargin - tilePad * mapScale;
 
         newWidgets.push({
-          id: prev.find((w) => w.type === "map")?.id || "map1",
-          type: "map",
+          id: mapWidget.id || "map1",
+          type: mapWidget.type, // Preserve type (map or map-speed)
           scale: mapScale,
-          rotation: prev.find((w) => w.type === "map")?.rotation || {
+          rotation: mapWidget.rotation || {
             alpha: 0,
             beta: 45,
           },
@@ -2333,7 +2348,12 @@ const TelemetryView = ({
 
       return newWidgets;
     });
-  };
+  }, [resolution, autoScaleFactor, layoutMargin]);
+
+  // Trigger Auto-Layout on Resolution Change
+  useEffect(() => {
+    handleAutoLayout();
+  }, [handleAutoLayout]);
 
   const bgStyles = {
     default: "bg-zinc-950",
